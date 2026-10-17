@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Net Merge</string>
+    <string name="channel_name">Net Merge status</string>
+    <string name="notif_title">Merging your connections</string>
+    <string name="notif_waiting">Waiting for networks</string>
+    <string name="stop">Stop</string>
+    <string name="switch_label">Merge Wi-Fi and mobile data</string>
+    <string name="hint">Each new connection goes out over Wi-Fi or mobile data, balanced by how fast each one is. A single download stays on one network; many parallel connections (browsers, downloads with several streams, torrents) add up. Mobile data stays on while this is active, so watch your data plan.</string>
+    <string name="no_networks">No networks yet</string>
+    <string name="vpn_denied">Net Merge needs VPN permission to route traffic.</string>
+    <string name="credit">Android port of net-merge by Rohit Mahto (MIT).</string>
+</resources>
