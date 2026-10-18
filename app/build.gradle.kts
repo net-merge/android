@@ -21,6 +21,10 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Phones only (no emulator x86 code), which keeps the download about a third smaller.
+            ndk {
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            }
             // Signed with the debug key so CI can produce an installable release APK.
             // Replace with your own signing config before publishing anywhere.
             signingConfig = signingConfigs.getByName("debug")

@@ -102,9 +102,10 @@ jobs:
             done
           fi
 
-  # Direct APK downloads. Pull requests from this repository update a "test-build" pre-release
-  # for trying a change on a phone; main publishes the real "latest" release.
-  release:
+  # Direct APK downloads. Every build of main or of a pull request from this repository commits
+  # the APK to download/ on its own branch, so it can be downloaded straight from the file list.
+  # main also refreshes the "latest" GitHub release.
+  publish-apk:
     needs: apk
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
@@ -112,42 +113,46 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      BRANCH: ${{ github.head_ref || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-        if: github.event_name == 'push'
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/download-artifact@v4
         with:
           name: apks
           path: out
-      # Keeps the newest APK in the repository's download/ folder, so it can be grabbed from the
-      # file list too.
       - name: Commit the APK to download/
-        if: github.event_name == 'push'
         run: |
           mkdir -p download
           cp out/net-merge-android.apk download/net-merge-android.apk
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add download/net-merge-android.apk
-          if ! git diff --cached --quiet; then
-            git commit -m "Update the downloadable APK [skip ci]"
-            for i in 1 2 3; do
-              git pull --rebase origin main && git push && break
-              sleep 5
-            done
+          if git diff --cached --quiet; then
+            echo "APK unchanged"
+            exit 0
           fi
-      - name: Publish the APK
+          git commit -m "Update the downloadable APK [skip ci]"
+          # The branch may have moved on while this ran (screenshots, new pushes).
+          for i in 1 2 3; do
+            git pull --rebase origin "$BRANCH" && git push origin "HEAD:$BRANCH" && exit 0
+            sleep 5
+          done
+          exit 1
+      - name: Refresh the "latest" release
+        if: github.event_name == 'push'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            tag=test-build; title="Net Merge for Android (test build, not final)"; flags=--prerelease
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest out/net-merge-android.apk --clobber
+            gh release edit latest --notes "Built from $GITHUB_SHA. Download **net-merge-android.apk** on your phone and open it to install."
           else
-            tag=latest; title="Net Merge for Android"; flags=--latest
+            gh release create latest out/net-merge-android.apk --target "$GITHUB_SHA" --latest \
+              --title "Net Merge for Android" \
+              --notes "Built from $GITHUB_SHA. Download **net-merge-android.apk** on your phone and open it to install."
           fi
-          gh release delete "$tag" --cleanup-tag --yes || true
-          gh release create "$tag" out/net-merge-android.apk --target "$SHA" $flags \
-            --title "$title" \
-            --notes "Built from $SHA. Download **net-merge-android.apk** on your phone and open it to install."
