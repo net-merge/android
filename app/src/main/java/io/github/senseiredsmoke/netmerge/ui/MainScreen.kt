@@ -330,8 +330,8 @@ private fun SettingsCard(evenSplit: Boolean, onEvenSplit: (Boolean) -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("Split evenly", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    "Give both networks the same share of new connections instead of following their measured speed. " +
-                        "Can help uploads when both networks upload at similar speeds.",
+                    "Give both networks the same share of new connections instead of following their speed. " +
+                        "Only helps when Wi-Fi and mobile data are about as fast as each other.",
                     color = p.muted, fontSize = 13.sp, lineHeight = 18.sp,
                 )
             }

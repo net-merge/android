@@ -25,7 +25,7 @@ object Engine {
     private val _history = MutableStateFlow<Map<String, List<Float>>>(emptyMap())
     val history: StateFlow<Map<String, List<Float>>> = _history.asStateFlow()
 
-    private val _evenSplit = MutableStateFlow(true)
+    private val _evenSplit = MutableStateFlow(false)
     val evenSplit: StateFlow<Boolean> = _evenSplit.asStateFlow()
 
     val running: Boolean get() = _phase.value == Phase.ON
@@ -54,7 +54,7 @@ object Engine {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
     fun loadSettings(ctx: Context) {
-        _evenSplit.value = prefs(ctx).getBoolean("even_split", true)
+        _evenSplit.value = prefs(ctx).getBoolean("even_split", false)
         applySettings()
     }
 

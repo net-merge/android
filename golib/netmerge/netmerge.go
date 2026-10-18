@@ -24,9 +24,11 @@ var (
 	stop    chan struct{}
 	indexes = map[string]int{} // network name -> stable index
 	last    []nics.Nic         // last list given to the scheduler, to re-apply weights
+	lastJS  string             // last SetNetworks input, re-applied when the mode changes
+	auto    = true
 )
 
-func init() { sched.SetAuto(false) } // even split by default; the app turns auto on if asked
+func init() { sched.SetAuto(true) }
 
 // network is what Kotlin reports for each usable network.
 type network struct {
@@ -35,6 +37,8 @@ type network struct {
 	V4     bool    `json:"v4"`
 	V6     bool    `json:"v6"`
 	Weight float64 `json:"weight"`
+	// The system's bandwidth estimate (NetworkCapabilities link bandwidth), kbit/s; 0 = unknown.
+	DownKbps float64 `json:"downKbps"`
 }
 
 // SetNetworks replaces the set of networks flows may use. It may be called at any time, before
@@ -46,6 +50,10 @@ func SetNetworks(js string) error {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	var maxDown float64
+	for _, n := range in {
+		maxDown = max(maxDown, n.DownKbps)
+	}
 	list := make([]nics.Nic, 0, len(in))
 	for _, n := range in {
 		h, err := strconv.ParseUint(n.Handle, 10, 64)
@@ -61,6 +69,11 @@ func SetNetworks(js string) error {
 		w := n.Weight
 		if w <= 0 {
 			w = 1
+			// With speed-based balancing, start from the system's estimate (relative to the fastest
+			// network, floored so a slow one is still tried and measured).
+			if auto && maxDown > 0 && n.DownKbps > 0 {
+				w = max(0.1, n.DownKbps/maxDown)
+			}
 		}
 		nic := nics.Nic{Name: n.Name, Index: idx, Weight: w}
 		// Unspecified source addresses: the Network binding chooses the real source.
@@ -73,7 +86,7 @@ func SetNetworks(js string) error {
 		list = append(list, nic)
 	}
 	sched.Update(list)
-	last = list
+	last, lastJS = list, js
 	// Flows on a network that just went away would otherwise hang until they time out.
 	sched.CloseGone()
 	return nil
@@ -84,9 +97,15 @@ func SetNetworks(js string) error {
 // closer than their download speeds.
 func SetAutoWeights(on bool) {
 	mu.Lock()
-	defer mu.Unlock()
+	auto = on
 	sched.SetAuto(on)
-	sched.Update(last) // with auto off this restores the even static weights
+	js, list := lastJS, last
+	mu.Unlock()
+	if js != "" {
+		SetNetworks(js) // recompute the configured weights for the new mode
+	} else {
+		sched.Update(list)
+	}
 }
 
 // Start begins serving the VPN's TUN. fd must be a detached descriptor (ParcelFileDescriptor

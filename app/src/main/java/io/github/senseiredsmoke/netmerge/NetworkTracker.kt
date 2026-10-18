@@ -25,11 +25,14 @@ class NetworkTracker(
         val network: Network,
         val v4: Boolean,
         val v6: Boolean,
+        /** The system's downstream bandwidth estimate in kbit/s, 0 if unknown. */
+        val downKbps: Int,
     )
 
     private val cm = context.getSystemService(ConnectivityManager::class.java)
     private val lock = Any()
     private val links = LinkedHashMap<Network, Pair<Int, LinkProperties?>>() // network -> (transport, props)
+    private val bandwidth = HashMap<Network, Int>() // network -> downstream kbit/s
     private val callbacks = mutableListOf<ConnectivityManager.NetworkCallback>()
 
     fun start() {
@@ -50,8 +53,21 @@ class NetworkTracker(
                     publish()
                 }
 
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    val kbps = caps.linkDownstreamBandwidthKbps
+                    val changed = synchronized(lock) {
+                        val old = bandwidth.put(network, kbps)
+                        // Ignore small wobbles; the estimate updates often.
+                        old == null || kotlin.math.abs(kbps - old) > old / 4
+                    }
+                    if (changed) publish()
+                }
+
                 override fun onLost(network: Network) {
-                    synchronized(lock) { links.remove(network) }
+                    synchronized(lock) {
+                        links.remove(network)
+                        bandwidth.remove(network)
+                    }
                     publish()
                 }
             }
@@ -66,11 +82,14 @@ class NetworkTracker(
             runCatching { cm.unregisterNetworkCallback(cb) }
         }
         callbacks.clear()
-        synchronized(lock) { links.clear() }
+        synchronized(lock) {
+            links.clear()
+            bandwidth.clear()
+        }
     }
 
     fun current(): List<Tracked> {
-        val snapshot = synchronized(lock) { links.toList() }
+        val (snapshot, bw) = synchronized(lock) { links.toList() to HashMap(bandwidth) }
         val seen = HashMap<String, Int>()
         return snapshot.map { (network, info) ->
             val (transport, lp) = info
@@ -79,7 +98,7 @@ class NetworkTracker(
             val n = (seen[base] ?: 0) + 1
             seen[base] = n
             val name = if (n == 1) base else "$base $n"
-            Tracked(name, network, hasV4(lp), hasV6(lp))
+            Tracked(name, network, hasV4(lp), hasV6(lp), bw[network] ?: 0)
         }.filter { it.v4 || it.v6 }
     }
 

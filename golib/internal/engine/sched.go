@@ -52,6 +52,7 @@ type Slot struct {
 
 	// guarded by Scheduler.mu
 	weight          [2]float64
+	base            float64 // Android port: the configured weight, used until speeds are measured
 	present         bool
 	state           [2]linkState
 	lastProbe       [2]time.Time
@@ -154,12 +155,13 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 			}
 		}
 		if found == nil {
-			sl := &Slot{Name: n.Name, Index: n.Index, key: n.Name, weight: [2]float64{n.Weight, n.Weight}, present: true}
+			sl := &Slot{Name: n.Name, Index: n.Index, key: n.Name, weight: [2]float64{n.Weight, n.Weight}, base: n.Weight, present: true}
 			sl.addr.Store(na)
 			s.slots = append(s.slots, sl)
 			continue
 		}
 		found.present = true
+		found.base = n.Weight
 		if !s.auto {
 			found.weight = [2]float64{n.Weight, n.Weight}
 		}
@@ -298,7 +300,13 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			}
 			switch {
 			case live < 2 || !measured:
-				sl.weight[f] = 1
+				// Android port: until every network is measured, use the configured weights (the
+				// system's own speed estimates) instead of an even split, so a much slower network
+				// doesn't get half the flows while it is being measured.
+				sl.weight[f] = sl.base
+				if sl.weight[f] <= 0 {
+					sl.weight[f] = 1
+				}
 			case s.uploading && upMeasured:
 				sl.weight[f] = math.Max(0.05, sl.peakUp[f]/maxUp)
 			default:
