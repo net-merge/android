@@ -9,6 +9,11 @@ PKG=io.github.senseiredsmoke.netmerge
 mkdir -p "$OUT"
 
 adb wait-for-device
+# A freshly booted emulator's launcher often throws an "isn't responding" dialog; keep error
+# dialogs out of the shots and give the system time to settle.
+adb shell settings put global hide_error_dialogs 1 || true
+sleep 20
+adb shell input keyevent KEYCODE_HOME
 adb install -r "$APK"
 adb shell appops set "$PKG" ACTIVATE_VPN allow
 adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true

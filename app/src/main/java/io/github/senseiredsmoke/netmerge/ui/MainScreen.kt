@@ -81,11 +81,11 @@ fun MainScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Header(phase, stats.size)
-            Spacer(Modifier.height(20.dp))
-            PowerButton(phase, onToggle)
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
+            PowerButton(phase, onToggle, size = 172.dp)
+            Spacer(Modifier.height(16.dp))
             CombinedSpeed(phase, stats)
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(18.dp))
 
             AnimatedVisibility(
                 visible = phase == Engine.Phase.ON,
@@ -93,11 +93,11 @@ fun MainScreen(
                 exit = fadeOut(tween(300)) + shrinkVertically(tween(300)),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    ChartCard(stats, history)
                     for ((i, s) in stats.withIndex()) {
                         NetworkCard(s, stats, i)
                     }
                     if (stats.isEmpty()) WaitingCard()
+                    ChartCard(stats, history)
                 }
             }
             AnimatedVisibility(
