@@ -97,10 +97,10 @@ jobs:
             git push
           fi
 
-  # A direct APK download: https://github.com/<owner>/net-merge-android/releases/latest
+  # Direct APK downloads. Pull requests from this repository update a "test-build" pre-release
+  # for trying a change on a phone; main publishes the real "latest" release.
   release:
     needs: apk
-    # main, plus pull requests from this repository so a build can be tried before merging.
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
@@ -112,13 +112,18 @@ jobs:
         with:
           name: apks
           path: out
-      - name: Publish the latest build
+      - name: Publish the APK
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          gh release delete latest --cleanup-tag --yes || true
-          gh release create latest out/net-merge-android.apk \
-            --target "${{ github.event.pull_request.head.sha || github.sha }}" --latest \
-            --title "Net Merge for Android (latest build)" \
-            --notes "Built from ${GITHUB_HEAD_REF:-$GITHUB_REF_NAME} at ${{ github.event.pull_request.head.sha || github.sha }}. Download **net-merge-android.apk** on your phone and open it to install."
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            tag=test-build; title="Net Merge for Android (test build, not final)"; flags=--prerelease
+          else
+            tag=latest; title="Net Merge for Android"; flags=--latest
+          fi
+          gh release delete "$tag" --cleanup-tag --yes || true
+          gh release create "$tag" out/net-merge-android.apk --target "$SHA" $flags \
+            --title "$title" \
+            --notes "Built from $SHA. Download **net-merge-android.apk** on your phone and open it to install."
