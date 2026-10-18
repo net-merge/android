@@ -94,7 +94,12 @@ jobs:
             echo "No screenshot changes"
           else
             git commit -m "Update screenshots [skip ci]"
-            git push
+            # The branch may have moved on while the emulator ran; the screenshots apply cleanly
+            # on top of whatever else was pushed.
+            for i in 1 2 3; do
+              git pull --rebase origin "${{ github.head_ref || github.ref_name }}" && git push && break
+              sleep 5
+            done
           fi
 
   # Direct APK downloads. Pull requests from this repository update a "test-build" pre-release
@@ -126,7 +131,10 @@ jobs:
           git add download/net-merge-android.apk
           if ! git diff --cached --quiet; then
             git commit -m "Update the downloadable APK [skip ci]"
-            git push
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && break
+              sleep 5
+            done
           fi
       - name: Publish the APK
         env:
