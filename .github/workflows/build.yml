@@ -108,10 +108,26 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
       - uses: actions/download-artifact@v4
         with:
           name: apks
           path: out
+      # Keeps the newest APK in the repository's download/ folder, so it can be grabbed from the
+      # file list too.
+      - name: Commit the APK to download/
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p download
+          cp out/net-merge-android.apk download/net-merge-android.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add download/net-merge-android.apk
+          if ! git diff --cached --quiet; then
+            git commit -m "Update the downloadable APK [skip ci]"
+            git push
+          fi
       - name: Publish the APK
         env:
           GH_TOKEN: ${{ github.token }}

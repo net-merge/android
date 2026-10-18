@@ -1,79 +1,108 @@
-# Net Merge for Android
-
-Use Wi-Fi and mobile data at the same time. Net Merge for Android spreads your phone's
-connections over both networks, so things that open many connections at once (browsers,
-multi-stream downloads, torrents, app stores) get the combined speed. No root needed.
+<h1 align="center">Net Merge for Android</h1>
 
 <p align="center">
-  <img src="docs/screenshots/on-dark.png" width="30%" alt="Merging Wi-Fi and mobile data, dark theme">
-  <img src="docs/screenshots/on-light.png" width="30%" alt="Merging, light theme">
-  <img src="docs/screenshots/off-dark.png" width="30%" alt="Switched off">
+  <b>Use Wi-Fi and mobile data at the same time.</b><br>
+  No root, no account, no server in between.
 </p>
 
 <p align="center">
-  <a href="https://github.com/SenseiRedsmoke/net-merge-android/releases/latest/download/net-merge-android.apk"><b>Download the APK</b></a>
+  <a href="https://github.com/SenseiRedsmoke/net-merge-android/raw/main/download/net-merge-android.apk"><b>⬇ Download the APK</b></a>
 </p>
 
-This is an Android port of [net-merge](https://github.com/rohit267/net-merge) by Rohit Mahto
-(MIT). The balancing engine (scheduler, balancer, internet probes, IPv6 policy) is upstream's Go
-code, used unchanged; this repository adds the Android plumbing around it.
+<p align="center">
+  <img src="docs/screenshots/on-dark.png" width="30%" alt="Net Merge merging Wi-Fi and mobile data, dark theme">
+  &nbsp;
+  <img src="docs/screenshots/on-light.png" width="30%" alt="Net Merge merging, light theme">
+  &nbsp;
+  <img src="docs/screenshots/off-dark.png" width="30%" alt="Net Merge switched off">
+</p>
 
-## How it works
+## What it does
 
-- The app is a local VPN (`VpnService`). Nothing leaves your phone through a remote server: the
-  TUN is terminated on the phone in a userland TCP/IP stack (gVisor, via
-  [tun2socks](https://github.com/xjasonlyu/tun2socks)).
-- Every new TCP connection or UDP session is re-dialed by the engine over Wi-Fi or mobile data.
-  The engine picks the network with the fewest active flows relative to its measured speed, and
-  stops using a network whose internet check fails.
-- Each outgoing socket is pinned to its network with `android_setsocknetwork` (the NDK form of
-  `Network.bindSocket`). The app excludes itself from its own VPN so these sockets go straight out.
-- Android normally turns mobile data off while Wi-Fi is connected. The app holds a
-  `ConnectivityManager.requestNetwork` for both Wi-Fi and cellular so both stay up while it runs.
-- Networks are discovered and updated live through `NetworkCallback` (Wi-Fi drops, mobile data
-  comes back, dual SIM).
+Your phone normally uses only one network at a time: Wi-Fi when it is connected, mobile data
+otherwise. Net Merge keeps both connected and spreads your apps' connections across them.
+Faster networks get more connections, and a network that loses internet stops getting any.
 
-A single connection always uses one network, so one plain download or a speed test with one
-stream won't get faster. Many parallel connections will. Upload works the same way: it only adds
-up when an app uploads over several connections and both networks have a usable uplink. While
-traffic is mostly upload, new connections are balanced by each network's measured upload speed.
+Things that open many connections at once get faster: web pages, app and game downloads,
+streaming, cloud backups and torrents. If one network drops, apps carry on over the other.
+
+## Install
+
+1. On your phone, tap **[Download the APK](https://github.com/SenseiRedsmoke/net-merge-android/raw/main/download/net-merge-android.apk)**. The file is also in the
+   [download](download) folder of this repository.
+2. Open the downloaded file and install it. If Android asks, allow your browser or file
+   manager to install unknown apps.
+3. Open **Net Merge**, tap the power button and tap **OK** on the VPN prompt.
+4. Optional: add the **Net Merge** tile to your Quick Settings panel for one-tap on/off.
+
+Requires Android 8.0 or newer.
 
 ## Using it
 
-1. On your phone, open the [APK download link](https://github.com/SenseiRedsmoke/net-merge-android/releases/latest/download/net-merge-android.apk)
-   and install it (allow "Install unknown apps" for your browser if Android asks).
-2. Open Net Merge, tap the power button and accept the VPN prompt.
-3. Optional: add the Net Merge tile to Quick Settings.
+- **Power button:** turns merging on and off. A notification with a Stop button stays while it
+  is on.
+- **Network cards:** each network's status, its share of the traffic, and its live download and
+  upload speeds.
+- **Last minute:** a live chart of how much each network carried.
+- **Split evenly:** gives both networks the same share of new connections instead of following
+  their speed. Only useful when Wi-Fi and mobile data are about as fast as each other.
 
-The screen shows each network's share of the traffic, its download and upload speed, and a live
-chart of the last minute. **Split evenly** gives both networks the same share of new connections
-instead of following their measured speed.
+Mobile data stays on the whole time merging is active, so keep an eye on your data plan.
 
-Mobile data stays on while merging is active, so keep an eye on your data plan.
+## What to expect
 
-## Building
+- **A single connection always stays on one network.** One large file download, or a speed test
+  set to "Single" connection, won't get faster. Use "Multi" in Ookla Speedtest to see the
+  combined speed.
+- **The gain depends on how close the two networks are in speed.** Two similar networks can come
+  close to doubling. If Wi-Fi is 400 Mbps and mobile data is 60 Mbps, the best possible total is
+  about 460 Mbps.
+- **Upload works the same way.** It only adds up when an app uploads over several connections,
+  and mobile data's upload is often much slower than its download.
 
-Requirements: Go 1.27+, JDK 17, the Android SDK and an NDK.
+## How it works
+
+Net Merge is a local VPN. Android sends all traffic to the app, and the app opens each
+connection again over Wi-Fi or mobile data, then passes the data back and forth. Nothing goes
+through an outside server: the VPN exists only on your phone.
+
+For developers, in more detail:
+
+- The VPN's interface is handled on the phone by a user-space TCP/IP stack
+  ([gVisor](https://gvisor.dev) via [tun2socks](https://github.com/xjasonlyu/tun2socks)).
+- Each outgoing socket is tied to one network with `android_setsocknetwork` (the NDK form of
+  `Network.bindSocket`). The app leaves itself out of its own VPN, so those sockets go straight
+  out.
+- Android normally turns mobile data off while Wi-Fi is connected. The app keeps both up with
+  `ConnectivityManager.requestNetwork`, and follows networks coming and going with
+  `NetworkCallback`.
+- The balancing engine (scheduler, balancer and internet checks) is the Go code from
+  [net-merge](https://github.com/rohit267/net-merge) by Rohit Mahto, built for Android with
+  gomobile.
+
+## Building from source
+
+You need Go 1.27 or newer, JDK 17, the Android SDK and an Android NDK.
 
 ```sh
 export ANDROID_HOME=~/Android/Sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/<version>
-./scripts/build-go.sh          # Go engine -> app/libs/netmerge.aar (gomobile)
-./gradlew assembleDebug        # -> app/build/outputs/apk/debug/
+./scripts/build-go.sh       # builds the Go engine into app/libs/netmerge.aar
+./gradlew assembleRelease   # builds app/build/outputs/apk/release/app-release.apk
 ```
 
-Engine tests run on any desktop: `cd golib && go test ./...`.
+The engine's tests run on any computer: `cd golib && go test ./...`
 
-## Layout
-
-| Path | What |
+| Folder | Contents |
 | --- | --- |
-| `golib/internal/engine` | Upstream engine, copied from net-merge at `6093879`. Android additions: closing flows when their network disappears, and upload-aware weights |
-| `golib/internal/tun` | TUN front-end: upstream `forward.go` plus an Android version of `tun.go` that takes the VPN's file descriptor |
-| `golib/internal/nics` | Android replacement for upstream's adapter layer: socket pinning by network handle |
-| `golib/netmerge` | The API the app calls through gomobile (`start`, `stop`, `setNetworks`, `stats`) |
-| `app/` | Kotlin app: VPN service, network tracking, main screen, Quick Settings tile |
+| `app/` | The Android app: VPN service, network tracking, screens and Quick Settings tile |
+| `golib/netmerge` | The functions the app calls in the Go engine |
+| `golib/internal/engine` | The balancing engine from upstream net-merge (commit `6093879`), plus Android additions: closing connections when their network disappears, upload-aware balancing, and starting from Android's speed estimates |
+| `golib/internal/tun` | Connects the VPN interface to the engine |
+| `golib/internal/nics` | Ties each socket to its Android network |
+| `download/` | The latest APK, updated automatically on every release |
 
-## License
+## Credits and license
 
-MIT, same as upstream. See [LICENSE](LICENSE).
+Based on [net-merge](https://github.com/rohit267/net-merge) by Rohit Mahto. MIT licensed, like
+the original. See [LICENSE](LICENSE).
