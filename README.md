@@ -4,6 +4,16 @@ Use Wi-Fi and mobile data at the same time. Net Merge for Android spreads your p
 connections over both networks, so things that open many connections at once (browsers,
 multi-stream downloads, torrents, app stores) get the combined speed. No root needed.
 
+<p align="center">
+  <img src="docs/screenshots/on-dark.png" width="30%" alt="Merging Wi-Fi and mobile data, dark theme">
+  <img src="docs/screenshots/on-light.png" width="30%" alt="Merging, light theme">
+  <img src="docs/screenshots/off-dark.png" width="30%" alt="Switched off">
+</p>
+
+<p align="center">
+  <a href="https://github.com/SenseiRedsmoke/net-merge-android/releases/latest/download/net-merge-android.apk"><b>Download the APK</b></a>
+</p>
+
 This is an Android port of [net-merge](https://github.com/rohit267/net-merge) by Rohit Mahto
 (MIT). The balancing engine (scheduler, balancer, internet probes, IPv6 policy) is upstream's Go
 code, used unchanged; this repository adds the Android plumbing around it.
@@ -24,13 +34,20 @@ code, used unchanged; this repository adds the Android plumbing around it.
   comes back, dual SIM).
 
 A single connection always uses one network, so one plain download or a speed test with one
-stream won't get faster. Many parallel connections will.
+stream won't get faster. Many parallel connections will. Upload works the same way: it only adds
+up when an app uploads over several connections and both networks have a usable uplink. While
+traffic is mostly upload, new connections are balanced by each network's measured upload speed.
 
 ## Using it
 
-1. Install the APK (from the latest CI run's artifacts, or build it yourself).
-2. Open Net Merge, flip the switch and accept the VPN prompt.
+1. On your phone, open the [APK download link](https://github.com/SenseiRedsmoke/net-merge-android/releases/latest/download/net-merge-android.apk)
+   and install it (allow "Install unknown apps" for your browser if Android asks).
+2. Open Net Merge, tap the power button and accept the VPN prompt.
 3. Optional: add the Net Merge tile to Quick Settings.
+
+The screen shows each network's share of the traffic, its download and upload speed, and a live
+chart of the last minute. **Split evenly** gives both networks the same share of new connections
+instead of following their measured speed.
 
 Mobile data stays on while merging is active, so keep an eye on your data plan.
 
@@ -51,7 +68,7 @@ Engine tests run on any desktop: `cd golib && go test ./...`.
 
 | Path | What |
 | --- | --- |
-| `golib/internal/engine` | Upstream engine, copied from net-merge at `6093879` (only import paths changed) |
+| `golib/internal/engine` | Upstream engine, copied from net-merge at `6093879`. Android additions: closing flows when their network disappears, and upload-aware weights |
 | `golib/internal/tun` | TUN front-end: upstream `forward.go` plus an Android version of `tun.go` that takes the VPN's file descriptor |
 | `golib/internal/nics` | Android replacement for upstream's adapter layer: socket pinning by network handle |
 | `golib/netmerge` | The API the app calls through gomobile (`start`, `stop`, `setNetworks`, `stats`) |

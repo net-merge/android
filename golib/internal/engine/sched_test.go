@@ -313,3 +313,54 @@ func TestUpdateDropsVanishedWhenIdle(t *testing.T) {
 		t.Fatal("NIC should be dropped once idle")
 	}
 }
+
+type closeCounter struct{ n *int }
+
+func (c closeCounter) Close() error { *c.n++; return nil }
+
+func TestCloseGoneClosesFlowsOfRemovedNetworks(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
+	var a, b *Slot
+	for _, sl := range s.slots {
+		if sl.Name == "A" {
+			a = sl
+		} else {
+			b = sl
+		}
+	}
+	var closedA, closedB int
+	a.conns.Store(closeCounter{&closedA}, struct{}{})
+	b.conns.Store(closeCounter{&closedB}, struct{}{})
+	a.active.Add(1) // an open flow keeps the slot around after Update
+	s.Update([]nics.Nic{nic("B", "10.0.0.2", 1)})
+	if n := s.CloseGone(); n != 1 || closedA != 1 || closedB != 0 {
+		t.Fatalf("closed %d (A=%d B=%d), want only A's flow", n, closedA, closedB)
+	}
+}
+
+// Android port: during an upload, new flows follow upload capacity, not combined capacity.
+func TestUploadWeightsFollowUplink(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("wifi", "10.0.0.1", 1), nic("cell", "10.0.0.2", 1)})
+	s.SetAuto(true)
+	w, c := s.slots[0], s.slots[1]
+	const mbit = 125_000
+	for i := 0; i < 3; i++ { // downloads: Wi-Fi 100, cell 20
+		w.bytesIn[Fam4].Add(100 * mbit)
+		c.bytesIn[Fam4].Add(20 * mbit)
+		s.Tick(time.Second)
+	}
+	if r := c.weight[Fam4] / w.weight[Fam4]; r > 0.25 {
+		t.Fatalf("download: cell should be down-weighted, ratio %.2f", r)
+	}
+	for i := 0; i < 3; i++ { // uploads: Wi-Fi 10, cell 20 (weak Wi-Fi uplink)
+		w.bytesOut[Fam4].Add(10 * mbit)
+		c.bytesOut[Fam4].Add(20 * mbit)
+		s.Tick(time.Second)
+	}
+	if !s.uploading {
+		t.Fatal("traffic is mostly upload")
+	}
+	if r := c.weight[Fam4] / w.weight[Fam4]; r < 1.5 {
+		t.Fatalf("upload: cell has the better uplink and should get more flows, ratio %.2f", r)
+	}
+}

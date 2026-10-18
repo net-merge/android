@@ -38,10 +38,87 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           ./scripts/build-go.sh
-      - name: Build APK
-        run: ./gradlew --no-daemon assembleDebug
+      - name: Build APKs
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
+      - name: Collect APKs
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/
+          cp app/build/outputs/apk/release/app-release.apk out/net-merge-android.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: net-merge-android-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: apks
+          path: out/*.apk
           if-no-files-found: error
+
+  # Real screenshots for the README, taken on an emulator that has both Wi-Fi and mobile data.
+  screenshots:
+    needs: apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: apks
+          path: out
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Take screenshots
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: ./scripts/screenshots.sh out/app-debug.apk docs/screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: docs/screenshots/*.png
+      - name: Commit screenshots
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshots/*.png
+          if git diff --cached --quiet; then
+            echo "No screenshot changes"
+          else
+            git commit -m "Update screenshots"
+            git push
+          fi
+
+  # A direct APK download: https://github.com/<owner>/net-merge-android/releases/latest
+  release:
+    needs: apk
+    # main, plus pull requests from this repository so a build can be tried before merging.
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: apks
+          path: out
+      - name: Publish the latest build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest out/net-merge-android.apk \
+            --target "${{ github.event.pull_request.head.sha || github.sha }}" --latest \
+            --title "Net Merge for Android (latest build)" \
+            --notes "Built from ${GITHUB_HEAD_REF:-$GITHUB_REF_NAME} at ${{ github.event.pull_request.head.sha || github.sha }}. Download **net-merge-android.apk** on your phone and open it to install."

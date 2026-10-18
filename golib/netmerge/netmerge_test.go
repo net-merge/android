@@ -28,3 +28,20 @@ func TestSetNetworksAndStats(t *testing.T) {
 		t.Fatal("want error for a bad handle")
 	}
 }
+
+func TestSetAutoWeightsRestoresEvenSplit(t *testing.T) {
+	if err := SetNetworks(`[{"name":"A","handle":"1","v4":true},{"name":"B","handle":"2","v4":true}]`); err != nil {
+		t.Fatal(err)
+	}
+	SetAutoWeights(false)
+	defer SetAutoWeights(true)
+	var st []stat
+	if err := json.Unmarshal([]byte(Stats()), &st); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range st {
+		if s.Present && s.Weight != 1 {
+			t.Fatalf("%s weight %v, want 1", s.Name, s.Weight)
+		}
+	}
+}

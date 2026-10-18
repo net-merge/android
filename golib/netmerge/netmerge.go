@@ -23,6 +23,7 @@ var (
 	dev     tun.Tun
 	stop    chan struct{}
 	indexes = map[string]int{} // network name -> stable index
+	last    []nics.Nic         // last list given to the scheduler, to re-apply weights
 )
 
 func init() { sched.SetAuto(true) }
@@ -72,7 +73,20 @@ func SetNetworks(js string) error {
 		list = append(list, nic)
 	}
 	sched.Update(list)
+	last = list
+	// Flows on a network that just went away would otherwise hang until they time out.
+	sched.CloseGone()
 	return nil
+}
+
+// SetAutoWeights picks how new connections are split. true (the default) follows each network's
+// measured speed; false splits them evenly, which helps when the networks' upload speeds are
+// closer than their download speeds.
+func SetAutoWeights(on bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	sched.SetAuto(on)
+	sched.Update(last) // with auto off this restores the even static weights
 }
 
 // Start begins serving the VPN's TUN. fd must be a detached descriptor (ParcelFileDescriptor

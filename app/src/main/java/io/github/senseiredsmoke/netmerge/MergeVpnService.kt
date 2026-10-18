@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -14,7 +15,6 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.service.quicksettings.TileService
 import android.util.Log
-import android.content.ComponentName
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -33,9 +33,10 @@ class MergeVpnService : VpnService() {
         private const val NOTIF_ID = 1
         private const val MTU = 9000
 
-        @Volatile
-        var running = false
-            private set
+        /** How long to wait for the first network before bringing the VPN up anyway. */
+        private const val NETWORK_WAIT_MS = 3000L
+
+        val running: Boolean get() = Engine.running
 
         fun start(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, MergeVpnService::class.java).setAction(ACTION_START))
@@ -48,13 +49,16 @@ class MergeVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
     private var tracker: NetworkTracker? = null
+    private var ticks = 0
     private val main = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
         override fun run() {
-            updateNotification()
-            main.postDelayed(this, 2000)
+            Engine.sample()
+            if (ticks++ % 2 == 0) updateNotification()
+            main.postDelayed(this, 1000)
         }
     }
+    private val establishAnyway = Runnable { establish() }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -63,14 +67,30 @@ class MergeVpnService : VpnService() {
         }
         // ACTION_START, or the system starting us for always-on VPN (action android.net.VpnService).
         goForeground()
-        if (!running) startVpn()
+        if (Engine.phase.value == Engine.Phase.OFF) begin()
         return START_STICKY
     }
 
-    private fun startVpn() {
+    /**
+     * Starts tracking networks first and brings the TUN up once at least one is known. Bringing
+     * it up with no networks makes every app's first connections fail (and Android briefly marks
+     * the VPN as having no internet), which is what made merging sometimes not work right after
+     * switching it on.
+     */
+    private fun begin() {
+        Engine.setPhase(Engine.Phase.STARTING)
+        Engine.loadSettings(this)
+        requestTileUpdate()
         val t = NetworkTracker(this) { nets -> main.post { onNetworks(nets) } }
         tracker = t
         t.start()
+        main.postDelayed(establishAnyway, NETWORK_WAIT_MS)
+    }
+
+    private fun establish() {
+        main.removeCallbacks(establishAnyway)
+        if (Engine.phase.value != Engine.Phase.STARTING || tun != null) return
+        val nets = tracker?.current().orEmpty()
 
         val builder = Builder()
             .setSession(getString(R.string.app_name))
@@ -86,6 +106,8 @@ class MergeVpnService : VpnService() {
                     this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
                 ),
             )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
+        if (nets.isNotEmpty()) builder.setUnderlyingNetworks(nets.map { it.network }.toTypedArray())
         // IPv6: a ULA so apps still prefer IPv4 on dual-stack sites (see upstream tun.go).
         runCatching {
             builder.addAddress("fd6e:6d65:7267::1", 64)
@@ -105,7 +127,7 @@ class MergeVpnService : VpnService() {
             return
         }
         tun = pfd
-        onNetworks(t.current())
+        pushNetworks(nets)
         try {
             // The engine owns the descriptor from here and closes it in stop().
             netmerge.Netmerge.start(pfd.detachFd().toLong(), MTU.toLong())
@@ -114,12 +136,26 @@ class MergeVpnService : VpnService() {
             shutdown()
             return
         }
-        running = true
+        Engine.setPhase(Engine.Phase.ON)
         main.post(refresh)
         requestTileUpdate()
     }
 
     private fun onNetworks(nets: List<NetworkTracker.Tracked>) {
+        when (Engine.phase.value) {
+            Engine.Phase.OFF -> return
+            Engine.Phase.STARTING -> {
+                pushNetworks(nets)
+                if (nets.isNotEmpty()) establish()
+            }
+            Engine.Phase.ON -> {
+                pushNetworks(nets)
+                updateNotification()
+            }
+        }
+    }
+
+    private fun pushNetworks(nets: List<NetworkTracker.Tracked>) {
         val arr = JSONArray()
         for (n in nets) {
             arr.put(
@@ -132,15 +168,18 @@ class MergeVpnService : VpnService() {
         }
         runCatching { netmerge.Netmerge.setNetworks(arr.toString()) }
             .onFailure { Log.e(TAG, "setNetworks", it) }
-        // Tells the system which networks we really use (metering, status bar icons).
-        setUnderlyingNetworks(nets.map { it.network }.toTypedArray())
-        updateNotification()
+        // Tells the system which networks we really use (metering, status bar icons). An empty
+        // array would mean "no connectivity"; null means "follow the default network".
+        if (tun != null) {
+            setUnderlyingNetworks(if (nets.isEmpty()) null else nets.map { it.network }.toTypedArray())
+        }
     }
 
     private fun shutdown() {
         main.removeCallbacks(refresh)
-        if (running) netmerge.Netmerge.stop()
-        running = false
+        main.removeCallbacks(establishAnyway)
+        if (Engine.phase.value == Engine.Phase.ON) netmerge.Netmerge.stop()
+        Engine.setPhase(Engine.Phase.OFF)
         tracker?.stop()
         tracker = null
         runCatching { tun?.close() }
@@ -156,7 +195,7 @@ class MergeVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        if (running) shutdown()
+        if (Engine.phase.value != Engine.Phase.OFF) shutdown()
         super.onDestroy()
     }
 
@@ -204,8 +243,8 @@ class MergeVpnService : VpnService() {
     }
 
     private fun updateNotification() {
-        if (!running) return
-        val stats = Stats.parse(netmerge.Netmerge.stats()).filter { it.present }
+        if (Engine.phase.value != Engine.Phase.ON) return
+        val stats = Engine.stats.value
         val text = if (stats.isEmpty()) getString(R.string.notif_waiting)
         else stats.joinToString("\n") { "${it.name}: ${Stats.rate(it.rateIn + it.rateOut)} · ${it.status}" }
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(text))

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"io"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -58,11 +59,16 @@ type Slot struct {
 	lastIn, lastOut [2]int64
 	rateIn, rateOut [2]float64 // bytes/s over the last tick
 	peak            [2]float64 // observed capacity: max recent rateIn+rateOut
+	peakUp          [2]float64 // Android port: the same, for upload (rateOut) alone
 
 	// The adapter's total traffic from the OS's counters (all apps, not only net-merge's flows).
 	linkIn, linkOut         uint64
 	linkRateIn, linkRateOut float64
 	linkPrimed              bool
+
+	// Android: open flows on this slot, so they can be closed the moment its network goes away
+	// (see CloseGone). Keys are io.Closer.
+	conns sync.Map
 }
 
 func (sl *Slot) ip(f Family) net.IP {
@@ -97,6 +103,12 @@ type Scheduler struct {
 	slots []*Slot
 	auto  bool
 	now   func() time.Time
+
+	// Android port: while traffic is mostly upload, auto weights follow each network's upload
+	// capacity instead of its combined capacity. Wi-Fi and mobile data usually have very
+	// different upload/download ratios, so download-based weights send new upload flows to the
+	// network with the weaker uplink.
+	uploading bool
 }
 
 func NewScheduler(nics []nics.Nic) *Scheduler {
@@ -212,8 +224,22 @@ func (s *Scheduler) Tick(dt time.Duration) {
 		}
 		sl.linkIn, sl.linkOut, sl.linkPrimed = in, out, true
 	}
+	// Which way is traffic mostly going right now? Hysteresis keeps it from flapping.
+	var totIn, totOut float64
+	for _, sl := range s.slots {
+		for _, f := range []Family{Fam4, Fam6} {
+			totIn += float64(sl.bytesIn[f].Load()-sl.lastIn[f]) / sec
+			totOut += float64(sl.bytesOut[f].Load()-sl.lastOut[f]) / sec
+		}
+	}
+	switch {
+	case totOut > minMeasuredPeak && totOut > 1.5*totIn:
+		s.uploading = true
+	case totIn > 1.5*totOut:
+		s.uploading = false
+	}
 	for _, f := range []Family{Fam4, Fam6} {
-		var maxPeak float64
+		var maxPeak, maxUp float64
 		live, measured := 0, true
 		idle := map[*Slot]bool{}
 		for _, sl := range s.slots {
@@ -227,11 +253,22 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			} else {
 				idle[sl] = true
 			}
+			if sl.rateOut[f] >= 0.05*sl.peakUp[f] {
+				sl.peakUp[f] = math.Max(sl.rateOut[f], sl.peakUp[f]*0.97)
+			}
 			if !sl.present || sl.ip(f) == nil {
 				continue
 			}
 			live++
 			maxPeak = math.Max(maxPeak, sl.peak[f])
+			maxUp = math.Max(maxUp, sl.peakUp[f])
+		}
+		// The same drift for the upload estimate, so a network starved of upload flows is
+		// re-measured too.
+		for _, sl := range s.slots {
+			if sl.present && sl.ip(f) != nil && sl.peakUp[f] > 0 && sl.rateOut[f] < 0.05*sl.peakUp[f] {
+				sl.peakUp[f] = math.Min(sl.peakUp[f]*1.03, math.Max(sl.peakUp[f], 0.5*maxUp))
+			}
 		}
 		// An idle NIC's old estimate may be stale or pessimistic (it was measured during a bad
 		// moment and then starved of flows, so it could never correct itself). Let it drift back
@@ -246,6 +283,12 @@ func (s *Scheduler) Tick(dt time.Duration) {
 				measured = false
 			}
 		}
+		upMeasured := maxUp > 0
+		for _, sl := range s.slots {
+			if sl.present && sl.ip(f) != nil && sl.peakUp[f] < minMeasuredPeak/2 {
+				upMeasured = false
+			}
+		}
 		if !s.auto {
 			continue
 		}
@@ -253,9 +296,12 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			if !sl.present || sl.ip(f) == nil {
 				continue
 			}
-			if live < 2 || !measured {
+			switch {
+			case live < 2 || !measured:
 				sl.weight[f] = 1
-			} else {
+			case s.uploading && upMeasured:
+				sl.weight[f] = math.Max(0.05, sl.peakUp[f]/maxUp)
+			default:
 				sl.weight[f] = math.Max(0.05, sl.peak[f]/maxPeak)
 			}
 		}
@@ -375,6 +421,29 @@ func (s *Scheduler) Fail(sl *Slot, f Family, cooldown time.Duration) {
 	sl.downUntil[f] = s.now().Add(cooldown)
 	s.mu.Unlock()
 	sl.failed.Add(1)
+}
+
+// CloseGone closes every open flow on a network that is no longer present. Without this, flows
+// on a network that was just switched off hang until they time out, and apps wait with them
+// instead of reconnecting over the networks that are left. (Android port addition.)
+func (s *Scheduler) CloseGone() int {
+	s.mu.Lock()
+	var gone []*Slot
+	for _, sl := range s.slots {
+		if !sl.present {
+			gone = append(gone, sl)
+		}
+	}
+	s.mu.Unlock()
+	n := 0
+	for _, sl := range gone {
+		sl.conns.Range(func(k, _ any) bool {
+			k.(io.Closer).Close()
+			n++
+			return true
+		})
+	}
+	return n
 }
 
 func (s *Scheduler) Snapshot() []SlotStats {

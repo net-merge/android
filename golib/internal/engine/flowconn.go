@@ -38,7 +38,11 @@ func (c *slotConn) release() { c.once.Do(func() { c.s.ReleaseFor(c.sl, c.fam) })
 
 func (c *slotConn) CloseRead() error  { c.release(); return c.TCPConn.CloseRead() }
 func (c *slotConn) CloseWrite() error { c.release(); return c.TCPConn.CloseWrite() }
-func (c *slotConn) Close() error      { c.release(); return c.TCPConn.Close() }
+func (c *slotConn) Close() error {
+	c.release()
+	c.sl.conns.Delete(c)
+	return c.TCPConn.Close()
+}
 
 // DialPinned is DialTCP for front-ends that hand the conn to someone else to pump.
 func (b *Balancer) DialPinned(ctx context.Context, host string, port int) (net.Conn, error) {
@@ -46,7 +50,9 @@ func (b *Balancer) DialPinned(ctx context.Context, host string, port int) (net.C
 	if err != nil {
 		return nil, err
 	}
-	return &slotConn{TCPConn: c.(*net.TCPConn), sl: sl, fam: f, s: b.S}, nil
+	sc := &slotConn{TCPConn: c.(*net.TCPConn), sl: sl, fam: f, s: b.S}
+	sl.conns.Store(sc, struct{}{})
+	return sc, nil
 }
 
 type slotPacketConn struct {
@@ -59,6 +65,11 @@ func (c *slotPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	n, a, err := c.PacketConn.ReadFrom(p)
 	c.sl.bytesIn[c.fam].Add(int64(n))
 	return n, a, err
+}
+
+func (c *slotPacketConn) Close() error {
+	c.sl.conns.Delete(c)
+	return c.PacketConn.Close()
 }
 
 func (c *slotPacketConn) WriteTo(p []byte, a net.Addr) (int, error) {
@@ -93,6 +104,8 @@ func (b *Balancer) ListenUDP(ctx context.Context, f Family) (net.PacketConn, err
 			lastErr = err
 			continue
 		}
-		return &slotPacketConn{PacketConn: pc, sl: sl, fam: f}, nil
+		spc := &slotPacketConn{PacketConn: pc, sl: sl, fam: f}
+		sl.conns.Store(spc, struct{}{})
+		return spc, nil
 	}
 }

@@ -13,7 +13,7 @@ class MergeTileService : TileService() {
     override fun onStartListening() = refresh()
 
     override fun onClick() {
-        if (MergeVpnService.running) {
+        if (Engine.phase.value != Engine.Phase.OFF) {
             MergeVpnService.stop(this)
         } else if (VpnService.prepare(this) == null) {
             MergeVpnService.start(this)
@@ -35,7 +35,7 @@ class MergeTileService : TileService() {
 
     private fun refresh() {
         val tile = qsTile ?: return
-        tile.state = if (MergeVpnService.running) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.state = if (Engine.phase.value != Engine.Phase.OFF) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.updateTile()
     }
 }
