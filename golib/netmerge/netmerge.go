@@ -26,7 +26,7 @@ var (
 	last    []nics.Nic         // last list given to the scheduler, to re-apply weights
 )
 
-func init() { sched.SetAuto(true) }
+func init() { sched.SetAuto(false) } // even split by default; the app turns auto on if asked
 
 // network is what Kotlin reports for each usable network.
 type network struct {
