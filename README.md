@@ -23,8 +23,26 @@ Your phone normally uses only one network at a time: Wi-Fi when it is connected,
 otherwise. Net Merge keeps both connected and spreads your apps' connections across them.
 Faster networks get more connections, and a network that loses internet stops getting any.
 
-Things that open many connections at once get faster: web pages, app and game downloads,
-streaming, cloud backups and torrents. If one network drops, apps carry on over the other.
+## What it speeds up
+
+Net Merge helps with anything that opens **several connections at once**:
+
+- **Several downloads together**, like updating many apps at once in the Play Store
+- **Web pages**, which load many images and files in parallel
+- **Torrents**, which use dozens of connections
+- **Cloud backups and sync**, like Google Photos or Google Drive uploading several files
+- **Download manager apps** that split one file into parts (for example ADM or 1DM)
+- **Ookla Speedtest in Multi mode**
+
+It does **not** speed up things that use a single connection:
+
+- One big download, such as a single game from the Play Store or one file in your browser
+- A single video stream
+- Online games and video calls
+
+Those stay on one network, so they are never slower than that network on its own.
+
+It also keeps you online: if Wi-Fi drops, new connections go over mobile data.
 
 ## Install
 
