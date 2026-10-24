@@ -1,4 +1,4 @@
-package io.github.senseiredsmoke.netmerge.ui
+package org.netmerge.android.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -36,8 +36,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import io.github.senseiredsmoke.netmerge.Engine
-import io.github.senseiredsmoke.netmerge.R
+import org.netmerge.android.Engine
+import org.netmerge.android.R
 
 /**
  * The big on/off control. Off: a quiet grey ring. Starting: an amber arc chasing around.

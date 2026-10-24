@@ -1,4 +1,4 @@
-package io.github.senseiredsmoke.netmerge
+package org.netmerge.android
 
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow

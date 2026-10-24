@@ -5,7 +5,7 @@
 set -uo pipefail
 APK="$1"
 OUT="$2"
-PKG=io.github.senseiredsmoke.netmerge
+PKG=org.netmerge.android
 mkdir -p "$OUT"
 
 adb wait-for-device

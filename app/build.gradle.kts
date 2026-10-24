@@ -7,15 +7,29 @@ plugins {
 }
 
 android {
-    namespace = "io.github.senseiredsmoke.netmerge"
+    namespace = "org.netmerge.android"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "io.github.senseiredsmoke.netmerge"
+        applicationId = "org.netmerge.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.1"
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    // Releases are signed with the net-merge key when CI has it (ANDROID_KEYSTORE, from the repo's
+    // secrets); every other build (pull requests, local) uses the debug key.
+    val releaseKey = System.getenv("ANDROID_KEYSTORE")
+    signingConfigs {
+        if (releaseKey != null) {
+            create("release") {
+                storeFile = file(releaseKey)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -25,9 +39,7 @@ android {
             ndk {
                 abiFilters += listOf("arm64-v8a", "armeabi-v7a")
             }
-            // Signed with the debug key so CI can produce an installable release APK.
-            // Replace with your own signing config before publishing anywhere.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseKey != null) "release" else "debug")
         }
     }
 

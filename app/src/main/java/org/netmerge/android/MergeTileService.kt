@@ -1,4 +1,4 @@
-package io.github.senseiredsmoke.netmerge
+package org.netmerge.android
 
 import android.app.PendingIntent
 import android.content.Intent

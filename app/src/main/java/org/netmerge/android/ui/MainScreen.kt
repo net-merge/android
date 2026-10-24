@@ -1,4 +1,4 @@
-package io.github.senseiredsmoke.netmerge.ui
+package org.netmerge.android.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -53,9 +53,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.github.senseiredsmoke.netmerge.Engine
-import io.github.senseiredsmoke.netmerge.R
-import io.github.senseiredsmoke.netmerge.Stats
+import org.netmerge.android.Engine
+import org.netmerge.android.R
+import org.netmerge.android.Stats
 
 @Composable
 fun MainScreen(
@@ -124,7 +124,7 @@ private fun Header(phase: Engine.Phase, networks: Int) {
     val p = LocalPalette.current
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            "Net Merge",
+            "net-merge",
             fontSize = 28.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground,

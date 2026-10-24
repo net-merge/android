@@ -1,4 +1,4 @@
-<h1 align="center">Net Merge for Android</h1>
+<h1 align="center">net-merge for Android</h1>
 
 <p align="center">
   <b>Use Wi-Fi and mobile data at the same time.</b><br>
@@ -6,27 +6,27 @@
 </p>
 
 <p align="center">
-  The official Android app of <a href="https://net-merge.org">net-merge</a>. Not released yet: the first signed
-  APK will be on the <a href="https://github.com/net-merge/android/releases">Releases</a> page.
+  The official Android app of <a href="https://net-merge.org">net-merge</a>.<br>
+  <a href="https://github.com/net-merge/android/releases/latest/download/net-merge-android.apk"><b>Download the APK</b></a>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/on-dark.png" width="30%" alt="Net Merge merging Wi-Fi and mobile data, dark theme">
+  <img src="docs/screenshots/on-dark.png" width="30%" alt="net-merge merging Wi-Fi and mobile data, dark theme">
   &nbsp;
-  <img src="docs/screenshots/on-light.png" width="30%" alt="Net Merge merging, light theme">
+  <img src="docs/screenshots/on-light.png" width="30%" alt="net-merge merging, light theme">
   &nbsp;
-  <img src="docs/screenshots/off-dark.png" width="30%" alt="Net Merge switched off">
+  <img src="docs/screenshots/off-dark.png" width="30%" alt="net-merge switched off">
 </p>
 
 ## What it does
 
 Your phone normally uses only one network at a time: Wi-Fi when it is connected, mobile data
-otherwise. Net Merge keeps both connected and spreads your apps' connections across them.
+otherwise. net-merge keeps both connected and spreads your apps' connections across them.
 Faster networks get more connections, and a network that loses internet stops getting any.
 
 ## What it speeds up
 
-Net Merge helps with anything that opens **several connections at once**:
+net-merge helps with anything that opens **several connections at once**:
 
 - **Several downloads together**, like updating many apps at once in the Play Store
 - **Web pages**, which load many images and files in parallel
@@ -47,12 +47,12 @@ It also keeps you online: if Wi-Fi drops, new connections go over mobile data.
 
 ## Install
 
-1. On your phone, download the APK from [Releases](https://github.com/net-merge/android/releases)
-   (none yet; build it from source until the first release).
+1. On your phone, tap **[Download the APK](https://github.com/net-merge/android/releases/latest/download/net-merge-android.apk)**.
+   Every version is on the [Releases](https://github.com/net-merge/android/releases) page, with SHA-256 checksums.
 2. Open the downloaded file and install it. If Android asks, allow your browser or file
    manager to install unknown apps.
-3. Open **Net Merge**, tap the power button and tap **OK** on the VPN prompt.
-4. Optional: add the **Net Merge** tile to your Quick Settings panel for one-tap on/off.
+3. Open **net-merge**, tap the power button and tap **OK** on the VPN prompt.
+4. Optional: add the **net-merge** tile to your Quick Settings panel for one-tap on/off.
 
 Requires Android 8.0 or newer.
 
@@ -81,7 +81,7 @@ Mobile data stays on the whole time merging is active, so keep an eye on your da
 
 ## How it works
 
-Net Merge is a local VPN. Android sends all traffic to the app, and the app opens each
+net-merge is a local VPN. Android sends all traffic to the app, and the app opens each
 connection again over Wi-Fi or mobile data, then passes the data back and forth. Nothing goes
 through an outside server: the VPN exists only on your phone.
 

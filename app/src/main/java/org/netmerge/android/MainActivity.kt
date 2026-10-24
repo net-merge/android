@@ -1,4 +1,4 @@
-package io.github.senseiredsmoke.netmerge
+package org.netmerge.android
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -12,8 +12,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import io.github.senseiredsmoke.netmerge.ui.MainScreen
-import io.github.senseiredsmoke.netmerge.ui.NetMergeTheme
+import org.netmerge.android.ui.MainScreen
+import org.netmerge.android.ui.NetMergeTheme
 
 class MainActivity : ComponentActivity() {
 

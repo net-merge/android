@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Two paths merging into one. -->
+<!-- The net-merge mark, for the notification and the Quick Settings tile. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -8,8 +8,8 @@
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="2.2"
+        android:strokeWidth="2.4"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:pathData="M4,5 C9,5 9,12 13,12 M4,19 C9,19 9,12 13,12 L20,12 M17,9 L20,12 L17,15" />
+        android:pathData="M6.75,5.5 L12,11.5 L17.25,5.5 M12,11.5 L12,18.5" />
 </vector>

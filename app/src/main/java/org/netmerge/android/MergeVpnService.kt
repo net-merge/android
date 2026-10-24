@@ -1,4 +1,4 @@
-package io.github.senseiredsmoke.netmerge
+package org.netmerge.android
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -26,8 +26,8 @@ import org.json.JSONObject
 class MergeVpnService : VpnService() {
 
     companion object {
-        const val ACTION_START = "io.github.senseiredsmoke.netmerge.START"
-        const val ACTION_STOP = "io.github.senseiredsmoke.netmerge.STOP"
+        const val ACTION_START = "org.netmerge.android.START"
+        const val ACTION_STOP = "org.netmerge.android.STOP"
         private const val TAG = "NetMerge"
         private const val CHANNEL = "status"
         private const val NOTIF_ID = 1

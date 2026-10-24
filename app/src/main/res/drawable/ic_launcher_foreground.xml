@@ -1,20 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The net-merge mark: two lines joining into one, as in the desktop app's icon. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:translateX="30"
-        android:translateY="30"
-        android:scaleX="2"
-        android:scaleY="2">
+        android:translateX="18.8"
+        android:translateY="17.7"
+        android:scaleX="2.2"
+        android:scaleY="2.2">
         <path
             android:fillColor="#00000000"
             android:strokeColor="#FFFFFFFF"
-            android:strokeWidth="2.2"
+            android:strokeWidth="2.8"
             android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:pathData="M4,5 C9,5 9,12 13,12 M4,19 C9,19 9,12 13,12 L20,12 M17,9 L20,12 L17,15" />
+            android:pathData="M9,8 L16,16 L23,8 M16,16 L16,25" />
     </group>
 </vector>

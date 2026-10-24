@@ -1,4 +1,4 @@
-package io.github.senseiredsmoke.netmerge
+package org.netmerge.android
 
 import android.content.Context
 import android.net.ConnectivityManager

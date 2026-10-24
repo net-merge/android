@@ -1,4 +1,4 @@
-package io.github.senseiredsmoke.netmerge.ui
+package org.netmerge.android.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
