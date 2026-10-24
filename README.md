@@ -6,7 +6,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/SenseiRedsmoke/net-merge-android/raw/main/download/net-merge-android.apk"><b>⬇ Download the APK</b></a>
+  The official Android app of <a href="https://net-merge.org">net-merge</a>. Not released yet: the first signed
+  APK will be on the <a href="https://github.com/net-merge/android/releases">Releases</a> page.
 </p>
 
 <p align="center">
@@ -46,8 +47,8 @@ It also keeps you online: if Wi-Fi drops, new connections go over mobile data.
 
 ## Install
 
-1. On your phone, tap **[Download the APK](https://github.com/SenseiRedsmoke/net-merge-android/raw/main/download/net-merge-android.apk)**. The file is also in the
-   [download](download) folder of this repository.
+1. On your phone, download the APK from [Releases](https://github.com/net-merge/android/releases)
+   (none yet; build it from source until the first release).
 2. Open the downloaded file and install it. If Android asks, allow your browser or file
    manager to install unknown apps.
 3. Open **Net Merge**, tap the power button and tap **OK** on the VPN prompt.
@@ -118,9 +119,12 @@ The engine's tests run on any computer: `cd golib && go test ./...`
 | `golib/internal/engine` | The balancing engine from upstream net-merge (commit `6093879`), plus Android additions: closing connections when their network disappears, upload-aware balancing, and starting from Android's speed estimates |
 | `golib/internal/tun` | Connects the VPN interface to the engine |
 | `golib/internal/nics` | Ties each socket to its Android network |
-| `download/` | The latest APK, updated automatically on every release |
 
 ## Credits and license
+
+Started by [SenseiRedsmoke](https://github.com/SenseiRedsmoke) as
+[net-merge-android](https://github.com/SenseiRedsmoke/net-merge-android), and brought into the net-merge
+project with its full history. Thank you!
 
 Based on [net-merge](https://github.com/rohit267/net-merge) by Rohit Mahto. MIT licensed, like
 the original. See [LICENSE](LICENSE).
