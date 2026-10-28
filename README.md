@@ -96,7 +96,7 @@ For developers, in more detail:
   `ConnectivityManager.requestNetwork`, and follows networks coming and going with
   `NetworkCallback`.
 - The balancing engine (scheduler, balancer and internet checks) is the Go code from
-  [net-merge](https://github.com/rohit267/net-merge) by Rohit Mahto, built for Android with
+  [net-merge](https://github.com/net-merge/net-merge) by Rohit Mahto, built for Android with
   gomobile.
 
 ## Building from source
@@ -126,5 +126,5 @@ Started by [SenseiRedsmoke](https://github.com/SenseiRedsmoke) as
 [net-merge-android](https://github.com/SenseiRedsmoke/net-merge-android), and brought into the net-merge
 project with its full history. Thank you!
 
-Based on [net-merge](https://github.com/rohit267/net-merge) by Rohit Mahto. MIT licensed, like
+Based on [net-merge](https://github.com/net-merge/net-merge) by Rohit Mahto. MIT licensed, like
 the original. See [LICENSE](LICENSE).
