@@ -15,6 +15,10 @@ import java.net.Inet6Address
  *
  * Android normally tears mobile data down once Wi-Fi is up. Holding a [NetworkRequest] for each
  * transport keeps both alive for as long as the tracker runs (needs CHANGE_NETWORK_STATE).
+ *
+ * Each request carries a [NETWORK_TIMEOUT_MS] timeout so that [onUnavailable] fires promptly when
+ * a transport cannot be brought up (e.g. no SIM, data disabled, carrier restriction), instead of
+ * leaving the engine waiting in the STARTING phase indefinitely.
  */
 class NetworkTracker(
     context: Context,
@@ -34,6 +38,14 @@ class NetworkTracker(
     private val links = LinkedHashMap<Network, Pair<Int, LinkProperties?>>() // network -> (transport, props)
     private val bandwidth = HashMap<Network, Int>() // network -> downstream kbit/s
     private val callbacks = mutableListOf<ConnectivityManager.NetworkCallback>()
+
+    companion object {
+        /**
+         * How long to wait for a transport before giving up and calling [onUnavailable].
+         * 20 seconds covers slow carrier bring-up without leaving the UI stuck indefinitely.
+         */
+        private const val NETWORK_TIMEOUT_MS = 20_000
+    }
 
     fun start() {
         for (transport in listOf(NetworkCapabilities.TRANSPORT_WIFI, NetworkCapabilities.TRANSPORT_CELLULAR)) {
@@ -70,9 +82,20 @@ class NetworkTracker(
                     }
                     publish()
                 }
+
+                /**
+                 * Called when the transport cannot be brought up within [NETWORK_TIMEOUT_MS].
+                 * Publish the current (partial) list so the engine can proceed with whatever
+                 * networks are available rather than hanging in the STARTING phase forever.
+                 */
+                override fun onUnavailable() {
+                    publish()
+                }
             }
             // requestNetwork (not registerNetworkCallback): this is what keeps the radio up.
-            cm.requestNetwork(request, cb)
+            // The timeout triggers onUnavailable() if the transport can't be satisfied, e.g.
+            // mobile data is disabled, no SIM, or the carrier rejects the request.
+            cm.requestNetwork(request, cb, NETWORK_TIMEOUT_MS)
             callbacks += cb
         }
     }
@@ -115,8 +138,14 @@ class NetworkTracker(
         if (lp == null) return false
         return lp.linkAddresses.any {
             val a = it.address
-            a is Inet6Address && !a.isLinkLocalAddress && !a.isLoopbackAddress &&
-                (a.address[0].toInt() and 0xfe) != 0xfc // skip ULA (fc00::/7)
+            // Accept any non-link-local, non-loopback global IPv6 address.
+            // Note: we intentionally do NOT filter out ULA (fc00::/7) here. Many mobile
+            // carriers — particularly in South/Southeast Asia (Jio, Airtel, Vi, AIS, True) —
+            // assign addresses in the fc/fd prefix range that are fully routable within the
+            // carrier's network and reach the public internet through NAT. Filtering them out
+            // caused net-merge to believe cellular had no IPv6 at all, so the network was
+            // discarded and merging silently fell back to Wi-Fi only.
+            a is Inet6Address && !a.isLinkLocalAddress && !a.isLoopbackAddress
         }
     }
 }

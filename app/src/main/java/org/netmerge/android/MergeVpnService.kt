@@ -33,8 +33,11 @@ class MergeVpnService : VpnService() {
         private const val NOTIF_ID = 1
         private const val MTU = 9000
 
-        /** How long to wait for the first network before bringing the VPN up anyway. */
-        private const val NETWORK_WAIT_MS = 3000L
+        /** How long to wait for the first network before bringing the VPN up anyway.
+         *  5 seconds gives slow carriers time to register cellular (some take 3–4 s after
+         *  Wi-Fi is already up) without keeping the user waiting too long at startup.
+         */
+        private const val NETWORK_WAIT_MS = 5000L
 
         val running: Boolean get() = Engine.running
 
@@ -169,10 +172,14 @@ class MergeVpnService : VpnService() {
         }
         runCatching { netmerge.Netmerge.setNetworks(arr.toString()) }
             .onFailure { Log.e(TAG, "setNetworks", it) }
-        // Tells the system which networks we really use (metering, status bar icons). An empty
-        // array would mean "no connectivity"; null means "follow the default network".
+        // Tells the system which networks we really use (metering, status bar icons).
+        // Pass null (not an empty array) when we have nothing yet: null means "follow the
+        // default network", while an empty array means "this VPN has no connectivity at
+        // all", which causes Android to show no-internet warnings and may route traffic
+        // away from the VPN interface entirely.
         if (tun != null) {
-            setUnderlyingNetworks(if (nets.isEmpty()) null else nets.map { it.network }.toTypedArray())
+            val underlying = if (nets.isEmpty()) null else nets.map { it.network }.toTypedArray()
+            setUnderlyingNetworks(underlying)
         }
     }
 
