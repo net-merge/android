@@ -59,8 +59,9 @@ func TestSystemEstimateSeedsWeights(t *testing.T) {
 	for _, s := range st {
 		w[s.Name] = s.Weight
 	}
-	if w["Wi-Fi"] != 1 || w["Mobile data"] != 0.125 {
-		t.Fatalf("weights %v, want Wi-Fi 1 and mobile 0.125", w)
+	// 50000/400000 is 0.125, below the floor.
+	if w["Wi-Fi"] != 1 || w["Mobile data"] != minSeedWeight {
+		t.Fatalf("weights %v, want Wi-Fi 1 and mobile %v", w, minSeedWeight)
 	}
 	SetAutoWeights(false) // even split ignores the estimates
 	defer SetAutoWeights(true)
@@ -69,5 +70,26 @@ func TestSystemEstimateSeedsWeights(t *testing.T) {
 		if s.Present && s.Weight != 1 {
 			t.Fatalf("even split: %s weight %v", s.Name, s.Weight)
 		}
+	}
+}
+
+// A network the system rates far slower must still carry some of a handful of connections, or it is
+// never measured and the user sees mobile data unused next to Wi-Fi.
+func TestSlowLookingNetworkStillGetsFlows(t *testing.T) {
+	SetAutoWeights(true)
+	if err := SetNetworks(`[{"name":"Wi-Fi","handle":"1","v4":true,"downKbps":900000},{"name":"Mobile data","handle":"2","v4":true,"downKbps":30000}]`); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for i := 0; i < 6; i++ {
+		sl := sched.Acquire(nil)
+		if sl == nil {
+			t.Fatal("no network")
+		}
+		got[sl.Name]++
+		defer sched.Release(sl)
+	}
+	if got["Mobile data"] < 2 || got["Wi-Fi"] < 2 {
+		t.Fatalf("6 connections went %v, want both networks to carry at least 2", got)
 	}
 }
