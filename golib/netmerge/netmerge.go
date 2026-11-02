@@ -33,7 +33,7 @@ func init() { sched.SetAuto(true) }
 // minSeedWeight is the smallest starting weight a network gets from the system's speed estimate:
 // at least one new connection in three, whatever the estimate says. Android reports link speeds
 // (a Wi-Fi 6 link can claim 1 Gbit/s while the router has 50), so the estimate is only a hint.
-const minSeedWeight = 0.5
+const minSeedWeight = engine.MinWeight
 
 // network is what Kotlin reports for each usable network.
 type network struct {

@@ -212,8 +212,8 @@ func TestAutoWeightsArePerFamily(t *testing.T) {
 		sb.bytesIn[Fam6].Add(100 * mbit)
 		s.Tick(time.Second)
 	}
-	if got := sb.weight[Fam4] / sa.weight[Fam4]; got > 0.06 {
-		t.Fatalf("slow v4 path should be down-weighted to ~0.05, got ratio %.2f", got)
+	if got := sb.weight[Fam4] / sa.weight[Fam4]; got > MinWeight+0.01 || got < MinWeight-0.01 {
+		t.Fatalf("slow v4 path should be down-weighted to the floor %.2f, got ratio %.2f", MinWeight, got)
 	}
 	if got := sb.weight[Fam6] / sa.weight[Fam6]; got < 0.95 {
 		t.Fatalf("fast v6 path must keep full weight, got ratio %.2f", got)
@@ -238,15 +238,15 @@ func TestPessimisticEstimateRecoversWhileIdle(t *testing.T) {
 		sb.bytesIn[Fam4].Add(5 * mbit)
 		s.Tick(time.Second)
 	}
-	if w := sb.weight[Fam4] / sa.weight[Fam4]; w > 0.06 {
-		t.Fatalf("setup: B should be down-weighted, ratio %.2f", w)
+	if w := sb.peak[Fam4] / sa.peak[Fam4]; w > 0.06 {
+		t.Fatalf("setup: B's estimate should be ~5%% of A's, ratio %.2f", w)
 	}
 	for i := 0; i < 80; i++ { // then nobody uses B, and A keeps working
 		sa.bytesIn[Fam4].Add(100 * mbit)
 		s.Tick(time.Second)
 	}
-	if w := sb.weight[Fam4] / sa.weight[Fam4]; w < 0.45 {
-		t.Fatalf("idle NIC should drift back up to ~0.5 so it is re-measured, ratio %.2f", w)
+	if w := sb.peak[Fam4] / sa.peak[Fam4]; w < 0.45 {
+		t.Fatalf("idle NIC's estimate should drift back up to ~0.5 of A's so it is re-measured, ratio %.2f", w)
 	}
 }
 
@@ -349,8 +349,8 @@ func TestUploadWeightsFollowUplink(t *testing.T) {
 		c.bytesIn[Fam4].Add(20 * mbit)
 		s.Tick(time.Second)
 	}
-	if r := c.weight[Fam4] / w.weight[Fam4]; r > 0.25 {
-		t.Fatalf("download: cell should be down-weighted, ratio %.2f", r)
+	if r := c.weight[Fam4] / w.weight[Fam4]; r > MinWeight+0.01 {
+		t.Fatalf("download: cell should be down-weighted to the floor, ratio %.2f", r)
 	}
 	for i := 0; i < 3; i++ { // uploads: Wi-Fi 10, cell 20 (weak Wi-Fi uplink)
 		w.bytesOut[Fam4].Add(10 * mbit)
@@ -391,15 +391,6 @@ func TestSiblingsSplitFollowsWeightsLoosely(t *testing.T) {
 	}
 }
 
-func TestClearlySlowerNetworkGetsNoSiblings(t *testing.T) {
-	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 0.1)})
-	for i := 0; i < 4; i++ {
-		if sl := s.AcquireDest(Fam4, nil, "cdn"); sl.Name != "A" {
-			t.Fatalf("connection %d went to %s, want A (B is 10x slower)", i, sl.Name)
-		}
-	}
-}
-
 func TestReleaseDestForgetsTheSibling(t *testing.T) {
 	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
 	first := s.AcquireDest(Fam4, nil, "cdn")
@@ -416,5 +407,22 @@ func TestFirstFlowToADestIsPlacedByLoad(t *testing.T) {
 	}
 	if got := s.AcquireDest(Fam4, nil, "new"); got.Name != "B" {
 		t.Fatalf("first flow to a new server went to %s, want the less loaded B", got.Name)
+	}
+}
+
+// A network that carries little because little is asked of it must not decay to the floor and stay
+// there: weights stay within 2:1.
+func TestLightlyUsedNetworkKeepsAHalfShare(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
+	s.SetAuto(true)
+	sa, sb := s.slots[0], s.slots[1]
+	const mbit = 125_000
+	for i := 0; i < 90; i++ {
+		sa.bytesIn[Fam4].Add(100 * mbit)
+		sb.bytesIn[Fam4].Add(mbit) // 1% of A
+		s.Tick(time.Second)
+	}
+	if sb.weight[Fam4] < MinWeight {
+		t.Fatalf("lightly used B has weight %.2f, want at least %.2f", sb.weight[Fam4], MinWeight)
 	}
 }

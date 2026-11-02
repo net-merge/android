@@ -189,9 +189,16 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 // A NIC counts as measured once it has carried this much (bytes/s, about 0.4 Mbit/s).
 const minMeasuredPeak = 50_000
 
+// MinWeight is the smallest weight a network gets once measured: never less than half a share of
+// new connections. A measured rate is what a network carried, not what it can carry. A network that
+// is lightly used (idle connections, an app that is slow on its own) decays toward that small rate,
+// then gets fewer connections, so its rate stays small and it never recovers. Capping the skew at
+// 2:1 keeps both networks in use, and their measured rates then correct each other.
+const MinWeight = 0.5
+
 // Tick samples throughput per family. With auto on, a family's weights follow each NIC's
-// observed peak for that family (floored at 0.05, so a slow path still sees an occasional flow
-// and is re-measured). Until every NIC with that family has been measured the weights stay
+// observed peak for that family (floored at MinWeight, so a slower path still carries a share
+// of the flows and is re-measured). Until every NIC with that family has been measured the weights stay
 // equal, which spreads load so each one gets measured. The peak holds while a NIC is idle and
 // only decays when it is in use but underperforming, so capacity is remembered across pauses.
 func (s *Scheduler) Tick(dt time.Duration) {
@@ -309,9 +316,9 @@ func (s *Scheduler) Tick(dt time.Duration) {
 					sl.weight[f] = 1
 				}
 			case s.uploading && upMeasured:
-				sl.weight[f] = math.Max(0.05, sl.peakUp[f]/maxUp)
+				sl.weight[f] = math.Max(MinWeight, sl.peakUp[f]/maxUp)
 			default:
-				sl.weight[f] = math.Max(0.05, sl.peak[f]/maxPeak)
+				sl.weight[f] = math.Max(MinWeight, sl.peak[f]/maxPeak)
 			}
 		}
 	}
@@ -324,12 +331,7 @@ func (s *Scheduler) Release(sl *Slot)                       { s.ReleaseFor(sl, F
 // Connections to one server are usually one download split into parts (a download manager, a
 // store's update), so they are spread over the networks instead of placed by the global load,
 // which other apps' idle connections make arbitrary. Weights count only loosely here: no network
-// counts for less than spreadWeightFloor of the fastest one, and one that is clearly slower than
-// spreadMinRel of the fastest is left out, so a part is not stranded on a crawl.
-const (
-	spreadWeightFloor = 0.5
-	spreadMinRel      = 0.2
-)
+// counts for less than MinWeight of the fastest one.
 
 // AcquireFor picks a NIC that has an address of the given family.
 func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
@@ -383,18 +385,6 @@ func (s *Scheduler) AcquireDest(f Family, skip map[string]struct{}, dest string)
 			siblings = true
 		}
 	}
-	if siblings && maxW > 0 {
-		// Leave out networks that are clearly slower, unless that leaves none.
-		var fit []*Slot
-		for _, sl := range pool {
-			if sl.weight[f]/maxW >= spreadMinRel {
-				fit = append(fit, sl)
-			}
-		}
-		if len(fit) > 0 {
-			pool = fit
-		}
-	}
 	start := rand.IntN(len(pool))
 	var best *Slot
 	bestScore, bestSib := math.Inf(1), 0
@@ -404,7 +394,7 @@ func (s *Scheduler) AcquireDest(f Family, skip map[string]struct{}, dest string)
 		sib := 0
 		if siblings && maxW > 0 {
 			sib = sl.dest[f][dest]
-			score = float64(sib+1) / math.Max(sl.weight[f]/maxW, spreadWeightFloor)
+			score = float64(sib+1) / math.Max(sl.weight[f]/maxW, MinWeight)
 		} else {
 			score = float64(sl.actF[f].Load()+1) / sl.weight[f]
 		}
