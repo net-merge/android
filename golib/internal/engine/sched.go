@@ -51,6 +51,7 @@ type Slot struct {
 	probing               [2]atomic.Bool
 
 	// guarded by Scheduler.mu
+	dest            [2]map[string]int // open flows per destination, to spread one download's connections
 	weight          [2]float64
 	base            float64 // Android port: the configured weight, used until speeds are measured
 	present         bool
@@ -320,8 +321,25 @@ func (s *Scheduler) Tick(dt time.Duration) {
 func (s *Scheduler) Acquire(skip map[string]struct{}) *Slot { return s.AcquireFor(Fam4, skip) }
 func (s *Scheduler) Release(sl *Slot)                       { s.ReleaseFor(sl, Fam4) }
 
+// Connections to one server are usually one download split into parts (a download manager, a
+// store's update), so they are spread over the networks instead of placed by the global load,
+// which other apps' idle connections make arbitrary. Weights count only loosely here: no network
+// counts for less than spreadWeightFloor of the fastest one, and one that is clearly slower than
+// spreadMinRel of the fastest is left out, so a part is not stranded on a crawl.
+const (
+	spreadWeightFloor = 0.5
+	spreadMinRel      = 0.2
+)
+
 // AcquireFor picks a NIC that has an address of the given family.
 func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
+	return s.AcquireDest(f, skip, "")
+}
+
+// AcquireDest is AcquireFor for a flow to dest (the server's address). While the flow has siblings
+// (open flows to the same dest), the network with the fewest of them wins. The first flow to a dest
+// is placed as before. Release it with ReleaseDest and the same dest.
+func (s *Scheduler) AcquireDest(f Family, skip map[string]struct{}, dest string) *Slot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -357,18 +375,52 @@ func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
 	}
 	// Random start so ties don't resonate with the arrival pattern (a rotating counter can
 	// lock onto e.g. "every third flow is a short DNS-like one" and starve an adapter).
+	var maxW float64
+	siblings := false
+	for _, sl := range pool {
+		maxW = math.Max(maxW, sl.weight[f])
+		if dest != "" && sl.dest[f][dest] > 0 {
+			siblings = true
+		}
+	}
+	if siblings && maxW > 0 {
+		// Leave out networks that are clearly slower, unless that leaves none.
+		var fit []*Slot
+		for _, sl := range pool {
+			if sl.weight[f]/maxW >= spreadMinRel {
+				fit = append(fit, sl)
+			}
+		}
+		if len(fit) > 0 {
+			pool = fit
+		}
+	}
 	start := rand.IntN(len(pool))
 	var best *Slot
-	bestScore := math.Inf(1)
+	bestScore, bestSib := math.Inf(1), 0
 	for i := range pool {
 		sl := pool[(start+i)%len(pool)]
-		if score := float64(sl.actF[f].Load()+1) / sl.weight[f]; score < bestScore {
-			best, bestScore = sl, score
+		var score float64
+		sib := 0
+		if siblings && maxW > 0 {
+			sib = sl.dest[f][dest]
+			score = float64(sib+1) / math.Max(sl.weight[f]/maxW, spreadWeightFloor)
+		} else {
+			score = float64(sl.actF[f].Load()+1) / sl.weight[f]
+		}
+		if score < bestScore || (score == bestScore && siblings && sib < bestSib) {
+			best, bestScore, bestSib = sl, score, sib
 		}
 	}
 	best.active.Add(1)
 	best.actF[f].Add(1)
 	best.total.Add(1)
+	if dest != "" {
+		if best.dest[f] == nil {
+			best.dest[f] = map[string]int{}
+		}
+		best.dest[f][dest]++
+	}
 	return best
 }
 
@@ -409,6 +461,21 @@ func (s *Scheduler) V6CoversAll() bool {
 func (s *Scheduler) ReleaseFor(sl *Slot, f Family) {
 	sl.active.Add(-1)
 	sl.actF[f].Add(-1)
+}
+
+// ReleaseDest frees a slot taken with AcquireDest.
+func (s *Scheduler) ReleaseDest(sl *Slot, f Family, dest string) {
+	s.ReleaseFor(sl, f)
+	if dest == "" {
+		return
+	}
+	s.mu.Lock()
+	if sl.dest[f][dest] <= 1 {
+		delete(sl.dest[f], dest)
+	} else {
+		sl.dest[f][dest]--
+	}
+	s.mu.Unlock()
 }
 
 // SetState records a probe result. A passing probe also clears any link-error cooldown.

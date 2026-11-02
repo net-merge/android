@@ -16,6 +16,7 @@ type slotConn struct {
 	sl   *Slot
 	fam  Family
 	s    *Scheduler
+	dest string
 	once sync.Once
 }
 
@@ -34,7 +35,7 @@ func (c *slotConn) Write(p []byte) (int, error) {
 // release frees the slot's balancing count. It happens at the first half-close, not at the final
 // Close: the relay can keep a finished flow open for up to a minute waiting for the peer's FIN,
 // and counting those as active would steer new flows away from the NIC that just finished.
-func (c *slotConn) release() { c.once.Do(func() { c.s.ReleaseFor(c.sl, c.fam) }) }
+func (c *slotConn) release() { c.once.Do(func() { c.s.ReleaseDest(c.sl, c.fam, c.dest) }) }
 
 func (c *slotConn) CloseRead() error  { c.release(); return c.TCPConn.CloseRead() }
 func (c *slotConn) CloseWrite() error { c.release(); return c.TCPConn.CloseWrite() }
@@ -50,7 +51,7 @@ func (b *Balancer) DialPinned(ctx context.Context, host string, port int) (net.C
 	if err != nil {
 		return nil, err
 	}
-	sc := &slotConn{TCPConn: c.(*net.TCPConn), sl: sl, fam: f, s: b.S}
+	sc := &slotConn{TCPConn: c.(*net.TCPConn), sl: sl, fam: f, s: b.S, dest: host}
 	sl.conns.Store(sc, struct{}{})
 	return sc, nil
 }
