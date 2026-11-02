@@ -93,3 +93,55 @@ func TestSlowLookingNetworkStillGetsFlows(t *testing.T) {
 		t.Fatalf("6 connections went %v, want both networks to carry at least 2", got)
 	}
 }
+
+func TestLimitsRoundTrip(t *testing.T) {
+	if err := SetLimitsJSON(`{"Wi-Fi":10,"Mobile data":2.5}`); err != nil {
+		t.Fatal(err)
+	}
+	defer SetLimitsJSON(`{}`)
+	var m map[string]float64
+	if err := json.Unmarshal([]byte(LimitsJSON()), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["Wi-Fi"] != 10 || m["Mobile data"] != 2.5 {
+		t.Fatalf("limits %v", m)
+	}
+	SetLimit("Wi-Fi", 0)
+	after := map[string]float64{}
+	json.Unmarshal([]byte(LimitsJSON()), &after)
+	if _, ok := after["Wi-Fi"]; ok {
+		t.Fatalf("Wi-Fi cap not removed: %v", after)
+	}
+	if err := SetNetworks(`[{"name":"Mobile data","handle":"2","v4":true}]`); err != nil {
+		t.Fatal(err)
+	}
+	var st []stat
+	json.Unmarshal([]byte(Stats()), &st)
+	found := false
+	for _, s := range st {
+		if s.Name == "Mobile data" {
+			found = s.LimitMbps == 2.5
+		}
+	}
+	if !found {
+		t.Fatalf("stats do not show the cap: %+v", st)
+	}
+}
+
+func TestNewer(t *testing.T) {
+	for _, c := range []struct {
+		cur, latest string
+		want        bool
+	}{
+		{"0.1.0", "v0.2.0", true},
+		{"0.2.0", "v0.2.0", false},
+		{"0.2.0", "v0.1.9", false},
+		{"0.2.0-dev", "v0.2.1", true},
+		{"dev", "v9.9.9", false},
+		{"0.2.0", "junk", false},
+	} {
+		if got := Newer(c.cur, c.latest); got != c.want {
+			t.Errorf("Newer(%q, %q) = %v", c.cur, c.latest, got)
+		}
+	}
+}

@@ -25,18 +25,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val vpnConsentOnly = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
+
     private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         Engine.loadSettings(this)
+        UpdateCheck.start()
         setContent {
             NetMergeTheme {
                 val phase by Engine.phase.collectAsState()
                 val stats by Engine.stats.collectAsState()
                 val history by Engine.history.collectAsState()
                 val even by Engine.evenSplit.collectAsState()
+                val useAll by Engine.useAllNetworks.collectAsState()
+                val autoPause by Engine.autoPause.collectAsState()
+                val onBoot by Engine.startOnBoot.collectAsState()
+                val update by Engine.update.collectAsState()
                 MainScreen(
                     phase = phase,
                     stats = stats,
@@ -44,6 +51,19 @@ class MainActivity : ComponentActivity() {
                     evenSplit = even,
                     onToggle = ::toggle,
                     onEvenSplit = { Engine.setEvenSplit(this, it) },
+                    useAllNetworks = useAll,
+                    onUseAllNetworks = { Engine.setUseAllNetworks(this, it) },
+                    autoPause = autoPause,
+                    onAutoPause = { Engine.setAutoPause(this, it) },
+                    startOnBoot = onBoot,
+                    onStartOnBoot = { on ->
+                        Engine.setStartOnBoot(this, on)
+                        // Merging at boot needs the VPN permission to be there already.
+                        if (on) VpnService.prepare(this)?.let { vpnConsentOnly.launch(it) }
+                    },
+                    onLimit = { name, mbps -> Engine.setLimit(this, name, mbps) },
+                    update = update,
+                    version = BuildConfig.VERSION_NAME,
                 )
             }
         }

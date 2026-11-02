@@ -134,22 +134,36 @@ func SetOwnerResolver(r OwnerResolver) {
 	}
 }
 
+// StartMonitor runs the internet checks and the speed sampling. They keep running while merging is
+// paused, because that is how a paused engine sees a second network come back.
+func StartMonitor() {
+	mu.Lock()
+	defer mu.Unlock()
+	startMonitor()
+}
+
+func startMonitor() {
+	if stop == nil {
+		stop = make(chan struct{})
+		go sched.RunProbes(stop)
+		go tick(stop)
+	}
+}
+
 // Start begins serving the VPN's TUN. fd must be a detached descriptor (ParcelFileDescriptor
 // #detachFd); the engine owns and closes it.
 func Start(fd int, mtu int) error {
 	mu.Lock()
 	defer mu.Unlock()
-	if stop != nil {
-		close(stop)
-		stop = nil
-	}
-	if err := dev.Start(bal, fd, mtu); err != nil {
-		return err
-	}
-	stop = make(chan struct{})
-	go sched.RunProbes(stop)
-	go tick(stop)
-	return nil
+	startMonitor()
+	return dev.Start(bal, fd, mtu)
+}
+
+// Pause closes the TUN but keeps the monitor running. Start resumes.
+func Pause() {
+	mu.Lock()
+	defer mu.Unlock()
+	dev.Stop()
 }
 
 func tick(stop <-chan struct{}) {
@@ -208,6 +222,8 @@ type stat struct {
 	RateOut  float64 `json:"rateOut"`
 	Weight   float64 `json:"weight"`
 	Present  bool    `json:"present"`
+	// The speed limit in Mbit/s, 0 = none.
+	LimitMbps float64 `json:"limitMbps"`
 }
 
 // Stats returns a JSON array with one entry per network: probe state, flows and throughput.
@@ -219,9 +235,91 @@ func Stats() string {
 			Name: s.Name, State: s.State, State6: s.State6,
 			Active: s.Active, Total: s.Total, Failed: s.Failed,
 			BytesIn: s.BytesIn, BytesOut: s.BytesOut, RateIn: s.RateIn, RateOut: s.RateOut,
-			Weight: s.Weight, Present: s.Present,
+			Weight: s.Weight, Present: s.Present, LimitMbps: s.LimitMbps,
 		})
 	}
 	b, _ := json.Marshal(out)
 	return string(b)
+}
+
+// SetLimit caps a network in Mbit/s across all of its flows, both directions; 0 removes the cap.
+// The cap stays with the network's name, so it survives the network going away and coming back.
+func SetLimit(name string, mbitPerSec float64) { sched.SetLimit(name, mbitPerSec) }
+
+// SetLimitsJSON replaces every cap, from what LimitsJSON returned earlier: {"Wi-Fi":10}.
+func SetLimitsJSON(js string) error {
+	var m map[string]float64
+	if err := json.Unmarshal([]byte(js), &m); err != nil {
+		return err
+	}
+	sched.SetLimits(m)
+	return nil
+}
+
+// LimitsJSON returns the caps, to be saved.
+func LimitsJSON() string {
+	b, _ := json.Marshal(sched.Limits())
+	return string(b)
+}
+
+// ParseLimit reads a cap typed by a person: "10", "7.5", "0", "off" or "unlimited".
+func ParseLimit(s string) (float64, error) { return engine.ParseLimit(s) }
+
+// Pausing by itself with fewer than two usable networks; the rules are in autopause.go.
+var ap autoPauser
+
+func usableAndMoving() (usable int, moving int64) {
+	var rate float64
+	for _, s := range sched.Snapshot() {
+		if !s.Present {
+			continue
+		}
+		if s.State == "up" || s.State6 == "up" {
+			usable++
+		}
+		moving += s.Active
+		rate += s.RateIn + s.RateOut
+	}
+	if rate < quietRate {
+		moving = 0 // idle keep-alive connections are always open, so they don't hold back a pause
+	}
+	return usable, moving
+}
+
+// AutoSetEnabled is the setting; on says whether merging is on right now.
+func AutoSetEnabled(enabled, on bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	ap.setEnabled(enabled, on)
+}
+
+// AutoStart begins without a tap (at boot): merging starts once two networks work, or at once if
+// pausing by itself is off.
+func AutoStart() {
+	mu.Lock()
+	defer mu.Unlock()
+	ap.start(true)
+}
+
+// AutoUserSet records that the user switched merging on or off, which pausing by itself respects.
+func AutoUserSet(on bool) {
+	n, _ := usableAndMoving()
+	mu.Lock()
+	defer mu.Unlock()
+	ap.userSet(on, n)
+}
+
+// AutoTick runs once a second: 0 means do nothing, 1 pause, 2 resume.
+func AutoTick(on bool) int {
+	n, moving := usableAndMoving()
+	mu.Lock()
+	defer mu.Unlock()
+	return int(ap.tick(time.Now(), on, n, moving))
+}
+
+// AutoWaiting says whether a paused engine is waiting for a second network by itself.
+func AutoWaiting() bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return ap.enabled && ap.waiting && !ap.manualOff
 }

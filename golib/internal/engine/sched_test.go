@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -35,6 +37,143 @@ func TestEqualWeightsSpreadEvenly(t *testing.T) {
 	p := acquireN(s, 6)
 	if countBy(p, "A") != 3 || countBy(p, "B") != 3 {
 		t.Fatalf("want 3/3, got A=%d B=%d", countBy(p, "A"), countBy(p, "B"))
+	}
+}
+
+func TestAutoIgnoresIdleSockets(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
+	s.SetAuto(true)
+	a, b := s.slots[0], s.slots[1]
+	for range 20 {
+		a.actF[Fam4].Add(1)
+		s.track(a, Fam4)
+	}
+	s.Tick(time.Second)
+	if got := a.busy(Fam4); got != 20 {
+		t.Fatalf("sockets became idle before two seconds: busy=%d", got)
+	}
+	s.Tick(time.Second)
+	if got := a.busy(Fam4); got != 0 {
+		t.Fatalf("idle sockets counted as busy: %d", got)
+	}
+	// A connecting socket still counts; an idle socket becomes busy on data.
+	b.actF[Fam4].Add(1)
+	if got := s.Acquire(nil); got != a {
+		t.Fatal("idle sockets steered new flow away from available link")
+	}
+	s.Release(a)
+	for activity := range a.flows[Fam4] {
+		activity.bytes.Add(1000)
+		break
+	}
+	s.Tick(time.Second)
+	if a.busy(Fam4) != 1 || b.busy(Fam4) != 1 {
+		t.Fatal("recent data and connecting sockets must count")
+	}
+}
+
+func TestAutoDoesNotForceSlowLinkAfterIdle(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
+	s.SetAuto(true)
+	clock := time.Unix(1000, 0)
+	s.now = func() time.Time { return clock }
+	a, b := s.slots[0], s.slots[1]
+	b.weight[Fam4] = 0.05
+	for range 24 {
+		clock = clock.Add(5 * time.Second)
+		if got := s.Acquire(nil); got != a {
+			t.Fatal("elapsed time overrode weighted scheduling")
+		}
+		s.Release(a)
+	}
+}
+
+func TestStaticSchedulingCountsIdleSockets(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 0.05)})
+	a, b := s.slots[0], s.slots[1]
+	for range 20 {
+		a.actF[Fam4].Add(1)
+		s.track(a, Fam4)
+	}
+	s.Tick(flowIdleAfter)
+	if got := s.Acquire(nil); got != b {
+		t.Fatal("static scheduling discounted idle sockets")
+	}
+}
+
+func TestAddressChangeResetsLearnedFamily(t *testing.T) {
+	for _, f := range []Family{Fam4, Fam6} {
+		t.Run(map[Family]string{Fam4: "IPv4", Fam6: "IPv6"}[f], func(t *testing.T) {
+			a := nic("A", "10.0.0.1", 1)
+			a.IP6 = net.ParseIP("2001:db8::1")
+			s := NewScheduler([]nics.Nic{a})
+			s.SetAuto(true)
+			sl := s.slots[0]
+			sl.peak = [2]float64{1e6, 2e6}
+			sl.weight = [2]float64{0.1, 0.2}
+			now := time.Now()
+			sl.state = [2]linkState{stateDown, stateDown}
+			sl.lastProbe = [2]time.Time{now, now}
+			sl.downUntil = [2]time.Time{now.Add(time.Hour), now.Add(time.Hour)}
+			if f == Fam4 {
+				a.IP = net.ParseIP("10.1.0.1")
+			} else {
+				a.IP6 = net.ParseIP("2001:db8:1::1")
+			}
+			other := Fam6 - f
+			peak, weight, cooldown := sl.peak[other], sl.weight[other], sl.downUntil[other]
+			s.Update([]nics.Nic{a})
+			if sl.peak[f] != 0 || sl.weight[f] != 1 || !sl.downUntil[f].IsZero() || !sl.lastProbe[f].IsZero() || sl.state[f] != stateUnknown {
+				t.Fatal("new address retained stale estimate or probe state")
+			}
+			if sl.peak[other] != peak || sl.weight[other] != weight || sl.downUntil[other] != cooldown || sl.lastProbe[other] != now || sl.state[other] != stateDown {
+				t.Fatal("unchanged address family's estimate or probe state reset")
+			}
+		})
+	}
+}
+
+func TestThroughputEstimateSmoothsBursts(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1)})
+	s.SetAuto(true)
+	a := s.slots[0]
+	a.bytesIn[Fam4].Add(1e6)
+	s.Tick(time.Second)
+	a.bytesIn[Fam4].Add(10e6)
+	s.Tick(time.Second)
+	want := 1e6 + (10e6-1e6)*(1-math.Exp(-1.0/2))
+	if math.Abs(a.peak[Fam4]-want) > 1e-6 {
+		t.Fatalf("rising estimate = %g, want %g", a.peak[Fam4], want)
+	}
+	peak := a.peak[Fam4]
+	a.bytesIn[Fam4].Add(1e6)
+	s.Tick(time.Second)
+	want = peak + (1e6-peak)*(1-math.Exp(-1.0/30))
+	if math.Abs(a.peak[Fam4]-want) > 1e-6 {
+		t.Fatalf("falling estimate = %g, want %g", a.peak[Fam4], want)
+	}
+}
+
+func TestTickIgnoresNonPositiveDuration(t *testing.T) {
+	for _, dt := range []time.Duration{0, -time.Second} {
+		t.Run(dt.String(), func(t *testing.T) {
+			s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1)})
+			s.SetAuto(true)
+			a := s.slots[0]
+			a.actF[Fam4].Add(1)
+			activity := s.track(a, Fam4)
+			a.bytesIn[Fam4].Add(1e6)
+			activity.bytes.Add(1e6)
+			before := s.Snapshot()[0]
+			s.Tick(dt)
+			if got := s.Snapshot()[0]; got != before || a.lastIn[Fam4] != 0 || activity.last != 0 || activity.idle != 0 {
+				t.Fatal("non-positive duration changed sampled state")
+			}
+			s.Tick(time.Second)
+			if a.peak[Fam4] != 1e6 {
+				t.Fatal("invalid tick consumed pending traffic sample")
+			}
+		})
 	}
 }
 
@@ -246,7 +385,48 @@ func TestPessimisticEstimateRecoversWhileIdle(t *testing.T) {
 		s.Tick(time.Second)
 	}
 	if w := sb.peak[Fam4] / sa.peak[Fam4]; w < 0.45 {
-		t.Fatalf("idle NIC's estimate should drift back up to ~0.5 of A's so it is re-measured, ratio %.2f", w)
+		t.Fatalf("idle NIC should drift back up to ~0.5 so it is re-measured, ratio %.2f", w)
+	}
+}
+
+func TestIdleRecoveryCappedAtHalfBestLink(t *testing.T) {
+	for _, fastActive := range []bool{false, true} {
+		name := "both idle"
+		if fastActive {
+			name = "fast link active"
+		}
+		t.Run(name, func(t *testing.T) {
+			a := nic("A", "10.0.0.1", 1)
+			a.IP6 = net.ParseIP("2001:db8::1")
+			b := nic("B", "10.0.0.2", 1)
+			b.IP6 = net.ParseIP("2001:db8::2")
+			s := NewScheduler([]nics.Nic{a, b})
+			s.SetAuto(true)
+			fast, slow := s.slots[0], s.slots[1]
+			for _, f := range []Family{Fam4, Fam6} {
+				fast.bytesIn[f].Add(10e6)
+				slow.bytesIn[f].Add(500_000)
+			}
+			s.Tick(time.Second)
+			for range 600 {
+				if fastActive {
+					for _, f := range []Family{Fam4, Fam6} {
+						fast.bytesIn[f].Add(10e6)
+					}
+				}
+				s.Tick(time.Second)
+				for _, f := range []Family{Fam4, Fam6} {
+					if ratio := slow.weight[f] / fast.weight[f]; ratio > 0.5 {
+						t.Fatalf("family %d: idle recovery exceeded half weight: %g", f, ratio)
+					}
+				}
+			}
+			for _, f := range []Family{Fam4, Fam6} {
+				if ratio := slow.weight[f] / fast.weight[f]; math.Abs(ratio-0.5) > 1e-6 {
+					t.Fatalf("family %d: idle estimate did not recover to half weight: %g", f, ratio)
+				}
+			}
+		})
 	}
 }
 
@@ -313,6 +493,8 @@ func TestUpdateDropsVanishedWhenIdle(t *testing.T) {
 		t.Fatal("NIC should be dropped once idle")
 	}
 }
+
+// Android additions on top of the PC engine.
 
 type closeCounter struct{ n *int }
 
@@ -447,5 +629,68 @@ func TestOneAppsConnectionsSpreadAcrossServers(t *testing.T) {
 	second := s.AcquireDest(Fam4, nil, "app:10112")
 	if first.Name == second.Name {
 		t.Fatalf("both of one app's connections went to %s", first.Name)
+	}
+}
+
+// An app's silent API connection must not push its download away from the fastest network.
+func TestIdleSiblingsDoNotCount(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("fast", "10.0.0.1", 1), nic("slow", "10.0.0.2", 0.5)})
+	s.SetAuto(true)
+	fast := s.AcquireDest(Fam4, nil, "app:1")
+	if fast.Name != "fast" {
+		t.Fatalf("first connection went to %s", fast.Name)
+	}
+	a := s.trackKey(fast, Fam4, "app:1")
+	for i := 0; i < 3; i++ { // no bytes move: it is idle now
+		s.Tick(time.Second)
+	}
+	_ = a
+	if got := s.AcquireDest(Fam4, nil, "app:1"); got.Name != "fast" {
+		t.Fatalf("download went to %s although the only sibling is idle", got.Name)
+	}
+}
+
+// While a sibling moves data, the next connection of that app takes the other network.
+func TestBusySiblingPushesTheNextOneAway(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("fast", "10.0.0.1", 1), nic("slow", "10.0.0.2", 0.5)})
+	s.SetAuto(true)
+	fast := s.AcquireDest(Fam4, nil, "app:1")
+	a := s.trackKey(fast, Fam4, "app:1")
+	a.bytes.Add(1 << 20)
+	s.Tick(time.Second)
+	if got := s.AcquireDest(Fam4, nil, "app:1"); got.Name != "slow" {
+		t.Fatalf("second connection went to %s, want slow", got.Name)
+	}
+}
+
+// A QUIC socket counts as a flow while it is open, and gives its slot back when closed.
+func TestUDPFlowHoldsItsSlotUntilClosed(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "127.0.0.1", 1)})
+	b := NewBalancer(s)
+	pc, err := b.ListenUDPFlow(context.Background(), Fam4, "app:1", "1.2.3.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sl := s.slots[0]
+	if sl.active.Load() != 1 || sl.dest[Fam4]["app:1"] != 1 {
+		t.Fatalf("open flow: active=%d dest=%v", sl.active.Load(), sl.dest[Fam4])
+	}
+	pc.Close()
+	pc.Close() // closing twice must not release twice
+	if sl.active.Load() != 0 || len(sl.dest[Fam4]) != 0 || len(sl.flows[Fam4]) != 0 {
+		t.Fatalf("after close: active=%d dest=%v flows=%d", sl.active.Load(), sl.dest[Fam4], len(sl.flows[Fam4]))
+	}
+}
+
+// DNS-like UDP stays uncounted: such flows are short and numerous.
+func TestPlainUDPHoldsNoSlot(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "127.0.0.1", 1)})
+	pc, err := NewBalancer(s).ListenUDP(context.Background(), Fam4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	if n := s.slots[0].active.Load(); n != 0 {
+		t.Fatalf("active=%d, want 0", n)
 	}
 }

@@ -16,6 +16,8 @@ data class Stats(
     val rateOut: Double,
     val weight: Double,
     val present: Boolean,
+    /** The speed limit in Mbit/s, 0 = none. */
+    val limitMbps: Double = 0.0,
 ) {
     /** "up", "checking" or "no internet", folding IPv4 and IPv6 into one word. */
     val status: String
@@ -36,9 +38,14 @@ data class Stats(
                     o.optLong("bytesIn"), o.optLong("bytesOut"),
                     o.optDouble("rateIn", 0.0), o.optDouble("rateOut", 0.0),
                     o.optDouble("weight", 1.0), o.optBoolean("present"),
+                    o.optDouble("limitMbps", 0.0),
                 )
             }
         }
+
+        /** A cap as the app shows it: "10 Mbit/s", "7.5 Mbit/s". */
+        fun limitText(mbps: Double): String =
+            (if (mbps == Math.floor(mbps)) "%.0f" else "%.1f").format(mbps) + " Mbit/s"
 
         fun rate(bytesPerSec: Double): String = size(bytesPerSec) + "/s"
 

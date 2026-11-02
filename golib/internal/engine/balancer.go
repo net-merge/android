@@ -135,8 +135,8 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 	return b.dialTCP(ctx, host, port, "")
 }
 
-// GroupKey names the set of flows that count as siblings when spreading: the app that owns the
-// flow when it is known ("app:10112"), else the server it goes to.
+// GroupKey names the set of flows that count as siblings when spreading: the app that owns the flow
+// when it is known ("app:10112"), else the server it goes to.
 func GroupKey(group, host string) string {
 	if group != "" {
 		return group
@@ -198,32 +198,43 @@ var bufPool = sync.Pool{New: func() any { b := make([]byte, 128<<10); return &b 
 // Relay copies both directions until both sides finish, counting bytes on the slot, then
 // closes both conns and releases the slot. Half-close is honoured so request/response
 // protocols that shut down their write side still receive the reply.
-func Relay(client, upstream net.Conn, sl *Slot, f Family, s *Scheduler, dest string) {
+func Relay(client, upstream net.Conn, sl *Slot, f Family, s *Scheduler) {
+	relay(client, upstream, sl, f, s, "")
+}
+
+func relay(client, upstream net.Conn, sl *Slot, f Family, s *Scheduler, key string) {
+	activity := s.trackKey(sl, f, key)
 	var wg sync.WaitGroup
 	var once sync.Once
-	release := func() { once.Do(func() { s.ReleaseDest(sl, f, dest) }) } // at the first half-close, see slotConn
+	release := func() {
+		once.Do(func() {
+			s.untrack(sl, f, activity)
+			s.ReleaseDest(sl, f, key)
+		})
+	} // at the first half-close, see slotConn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pump(upstream, client, &sl.bytesOut[f])
+		pump(upstream, client, &sl.bytesOut[f], sl, false, activity)
 		release()
 	}()
-	pump(client, upstream, &sl.bytesIn[f])
+	pump(client, upstream, &sl.bytesIn[f], sl, true, activity)
 	release()
 	wg.Wait()
 	client.Close()
 	upstream.Close()
 }
 
-func pump(dst, src net.Conn, counter interface{ Add(int64) int64 }) {
+func pump(dst, src net.Conn, counter *atomic.Int64, sl *Slot, down bool, activity *flowActivity) {
 	bp := bufPool.Get().(*[]byte)
 	defer bufPool.Put(bp)
 	buf := *bp
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
+			activity.bytes.Add(int64(n))
 			counter.Add(int64(n))
-			if _, werr := dst.Write(buf[:n]); werr != nil {
+			if _, werr := sl.writePaced(dst, buf[:n], down); werr != nil {
 				dst.Close()
 				src.Close()
 				return

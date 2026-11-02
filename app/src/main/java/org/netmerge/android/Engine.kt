@@ -10,7 +10,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * samples the Go engine once a second; the UI only observes.
  */
 object Engine {
-    enum class Phase { OFF, STARTING, ON }
+    /** PAUSED: the service runs and watches the networks, but nothing is captured (one network works). */
+    enum class Phase { OFF, STARTING, ON, PAUSED }
 
     /** Seconds of throughput history kept for the live chart. */
     const val HISTORY = 60
@@ -28,7 +29,24 @@ object Engine {
     private val _evenSplit = MutableStateFlow(false)
     val evenSplit: StateFlow<Boolean> = _evenSplit.asStateFlow()
 
+    private val _useAllNetworks = MutableStateFlow(true)
+    val useAllNetworks: StateFlow<Boolean> = _useAllNetworks.asStateFlow()
+
+    private val _autoPause = MutableStateFlow(true)
+    val autoPause: StateFlow<Boolean> = _autoPause.asStateFlow()
+
+    private val _startOnBoot = MutableStateFlow(false)
+    val startOnBoot: StateFlow<Boolean> = _startOnBoot.asStateFlow()
+
+    /** The newest release's tag, once GitHub has one newer than this app. */
+    private val _update = MutableStateFlow<String?>(null)
+    val update: StateFlow<String?> = _update.asStateFlow()
+
     val running: Boolean get() = _phase.value == Phase.ON
+
+    internal fun setUpdate(tag: String) {
+        _update.value = tag
+    }
 
     internal fun setPhase(p: Phase) {
         _phase.value = p
@@ -54,8 +72,14 @@ object Engine {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
     fun loadSettings(ctx: Context) {
-        _evenSplit.value = prefs(ctx).getBoolean("even_split", false)
+        val p = prefs(ctx)
+        _evenSplit.value = p.getBoolean("even_split", false)
+        _useAllNetworks.value = p.getBoolean("use_all_networks", true)
+        _autoPause.value = p.getBoolean("auto_pause", true)
+        _startOnBoot.value = p.getBoolean("start_on_boot", false)
+        runCatching { netmerge.Netmerge.setLimitsJSON(p.getString("limits", "{}")) }
         applySettings()
+        runCatching { netmerge.Netmerge.autoSetEnabled(_autoPause.value, running) }
     }
 
     fun setEvenSplit(ctx: Context, on: Boolean) {
@@ -64,7 +88,35 @@ object Engine {
         applySettings()
     }
 
+    fun setUseAllNetworks(ctx: Context, on: Boolean) {
+        prefs(ctx).edit().putBoolean("use_all_networks", on).apply()
+        _useAllNetworks.value = on
+        applySettings()
+    }
+
+    fun setAutoPause(ctx: Context, on: Boolean) {
+        prefs(ctx).edit().putBoolean("auto_pause", on).apply()
+        _autoPause.value = on
+        runCatching { netmerge.Netmerge.autoSetEnabled(on, running) }
+    }
+
+    fun setStartOnBoot(ctx: Context, on: Boolean) {
+        prefs(ctx).edit().putBoolean("start_on_boot", on).apply()
+        _startOnBoot.value = on
+    }
+
+    fun wantsStartOnBoot(ctx: Context): Boolean = prefs(ctx).getBoolean("start_on_boot", false)
+
+    /** Caps a network in Mbit/s (0 removes the cap) and remembers it. */
+    fun setLimit(ctx: Context, name: String, mbps: Double) {
+        runCatching {
+            netmerge.Netmerge.setLimit(name, mbps)
+            prefs(ctx).edit().putString("limits", netmerge.Netmerge.limitsJSON()).apply()
+        }
+    }
+
     private fun applySettings() {
         runCatching { netmerge.Netmerge.setAutoWeights(!_evenSplit.value) }
+        runCatching { netmerge.Netmerge.setIPv6Mode(if (_useAllNetworks.value) "auto" else "on") }
     }
 }
