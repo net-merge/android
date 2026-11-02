@@ -30,6 +30,11 @@ var (
 
 func init() { sched.SetAuto(true) }
 
+// minSeedWeight is the smallest starting weight a network gets from the system's speed estimate:
+// at least one new connection in three, whatever the estimate says. Android reports link speeds
+// (a Wi-Fi 6 link can claim 1 Gbit/s while the router has 50), so the estimate is only a hint.
+const minSeedWeight = 0.5
+
 // network is what Kotlin reports for each usable network.
 type network struct {
 	Name   string  `json:"name"`
@@ -70,9 +75,10 @@ func SetNetworks(js string) error {
 		if w <= 0 {
 			w = 1
 			// With speed-based balancing, start from the system's estimate (relative to the fastest
-			// network, floored so a slow one is still tried and measured).
+			// network). The floor keeps a network that looks slow in the game: with a lower one it
+			// gets no flows, so it is never measured and never leaves its seed weight.
 			if auto && maxDown > 0 && n.DownKbps > 0 {
-				w = max(0.1, n.DownKbps/maxDown)
+				w = max(minSeedWeight, n.DownKbps/maxDown)
 			}
 		}
 		nic := nics.Nic{Name: n.Name, Index: idx, Weight: w}
