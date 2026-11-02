@@ -132,6 +132,20 @@ func classify(err error) dialClass {
 // DialTCP connects to host:port over one NIC, failing over to the others on link-level errors.
 // On success the caller owns the returned slot and must Relay or Release it.
 func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn, *Slot, Family, error) {
+	return b.dialTCP(ctx, host, port, "")
+}
+
+// GroupKey names the set of flows that count as siblings when spreading: the app that owns the
+// flow when it is known ("app:10112"), else the server it goes to.
+func GroupKey(group, host string) string {
+	if group != "" {
+		return group
+	}
+	return "ip:" + host
+}
+
+func (b *Balancer) dialTCP(ctx context.Context, host string, port int, group string) (net.Conn, *Slot, Family, error) {
+	key := GroupKey(group, host)
 	// The destination's family decides which NIC address is used; a host name stays IPv4.
 	f, network := Fam4, "tcp4"
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
@@ -144,7 +158,7 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		rep, lastErr = repNetUnreachable, errors.New("no usable IPv6 adapter")
 	}
 	for {
-		sl := b.S.AcquireDest(f, tried, host)
+		sl := b.S.AcquireDest(f, tried, key)
 		if sl == nil {
 			return nil, nil, f, &dialError{rep: rep, err: lastErr}
 		}
@@ -159,7 +173,7 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		if err == nil {
 			return conn, sl, f, nil
 		}
-		b.S.ReleaseDest(sl, f, host)
+		b.S.ReleaseDest(sl, f, key)
 		c := classify(err)
 		if c.linkDown {
 			b.S.Fail(sl, f, b.FailCooldown)

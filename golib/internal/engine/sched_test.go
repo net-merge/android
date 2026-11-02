@@ -426,3 +426,26 @@ func TestLightlyUsedNetworkKeepsAHalfShare(t *testing.T) {
 		t.Fatalf("lightly used B has weight %.2f, want at least %.2f", sb.weight[Fam4], MinWeight)
 	}
 }
+
+func TestGroupKey(t *testing.T) {
+	if got := GroupKey("app:10112", "1.2.3.4"); got != "app:10112" {
+		t.Fatalf("an owned flow groups by its app, got %q", got)
+	}
+	if got := GroupKey("", "1.2.3.4"); got != "ip:1.2.3.4" {
+		t.Fatalf("an unowned flow groups by its server, got %q", got)
+	}
+}
+
+// One app's connections to different servers (a store's CDN hands out a new address per
+// connection) must still land on different networks.
+func TestOneAppsConnectionsSpreadAcrossServers(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
+	for i := 0; i < 4; i++ { // other apps' connections, all on B
+		s.AcquireDest(Fam4, map[string]struct{}{"A": {}}, "app:999")
+	}
+	first := s.AcquireDest(Fam4, nil, "app:10112")
+	second := s.AcquireDest(Fam4, nil, "app:10112")
+	if first.Name == second.Name {
+		t.Fatalf("both of one app's connections went to %s", first.Name)
+	}
+}

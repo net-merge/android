@@ -29,8 +29,19 @@ const udpSessionTimeout = 30 * time.Second
 
 type tunProxy struct{ b *engine.Balancer }
 
+// OwnerFunc, when set, tells which app owns a TCP flow (its uid), or a negative number if unknown.
+// Android implements it with ConnectivityManager.getConnectionOwnerUid. Set it before Start.
+var OwnerFunc func(proto int, srcIP string, srcPort int, dstIP string, dstPort int) int
+
 func (p tunProxy) DialContext(ctx context.Context, m *M.Metadata) (net.Conn, error) {
-	return p.b.DialPinned(ctx, m.DstIP.Unmap().String(), int(m.DstPort))
+	dst := m.DstIP.Unmap().String()
+	group := ""
+	if own := OwnerFunc; own != nil {
+		if uid := own(6, m.SrcIP.Unmap().String(), int(m.SrcPort), dst, int(m.DstPort)); uid >= 0 {
+			group = "app:" + strconv.Itoa(uid)
+		}
+	}
+	return p.b.DialPinnedGroup(ctx, dst, int(m.DstPort), group)
 }
 
 func (p tunProxy) DialUDP(m *M.Metadata) (net.PacketConn, error) {

@@ -114,6 +114,26 @@ func SetAutoWeights(on bool) {
 	}
 }
 
+// OwnerResolver tells which app owns a TCP connection. The Kotlin side implements it with
+// ConnectivityManager.getConnectionOwnerUid. A negative answer means unknown.
+type OwnerResolver interface {
+	OwnerUid(proto int, srcIP string, srcPort int, dstIP string, dstPort int) int
+}
+
+// SetOwnerResolver lets the engine spread one app's connections over the networks, instead of
+// placing each by itself. Call it before Start; nil turns it off.
+func SetOwnerResolver(r OwnerResolver) {
+	mu.Lock()
+	defer mu.Unlock()
+	if r == nil {
+		tun.OwnerFunc = nil
+		return
+	}
+	tun.OwnerFunc = func(proto int, srcIP string, srcPort int, dstIP string, dstPort int) int {
+		return r.OwnerUid(proto, srcIP, srcPort, dstIP, dstPort)
+	}
+}
+
 // Start begins serving the VPN's TUN. fd must be a detached descriptor (ParcelFileDescriptor
 // #detachFd); the engine owns and closes it.
 func Start(fd int, mtu int) error {

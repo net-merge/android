@@ -8,6 +8,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -17,6 +18,8 @@ import android.service.quicksettings.TileService
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.InetAddress
+import java.net.InetSocketAddress
 
 /**
  * Captures all traffic with a TUN and hands it to the Go engine, which re-dials every flow over
@@ -44,6 +47,28 @@ class MergeVpnService : VpnService() {
 
         fun stop(ctx: Context) {
             ctx.startService(Intent(ctx, MergeVpnService::class.java).setAction(ACTION_STOP))
+        }
+    }
+
+    private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
+
+    /**
+     * Tells the engine which app owns a connection, so one app's connections are spread over the
+     * networks together (a store opens only two or three downloads; placed one by one they
+     * often all land on the same network). -1 means unknown, and the engine then groups by server.
+     */
+    private val ownerResolver = object : netmerge.OwnerResolver {
+        override fun ownerUid(proto: Long, srcIP: String, srcPort: Long, dstIP: String, dstPort: Long): Long {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1
+            return try {
+                connectivity.getConnectionOwnerUid(
+                    proto.toInt(),
+                    InetSocketAddress(InetAddress.getByName(srcIP), srcPort.toInt()),
+                    InetSocketAddress(InetAddress.getByName(dstIP), dstPort.toInt()),
+                ).toLong()
+            } catch (e: Exception) {
+                -1
+            }
         }
     }
 
@@ -130,6 +155,7 @@ class MergeVpnService : VpnService() {
         pushNetworks(nets)
         try {
             // The engine owns the descriptor from here and closes it in stop().
+            netmerge.Netmerge.setOwnerResolver(ownerResolver)
             netmerge.Netmerge.start(pfd.detachFd().toLong(), MTU.toLong())
         } catch (e: Exception) {
             Log.e(TAG, "engine start failed", e)
@@ -180,6 +206,7 @@ class MergeVpnService : VpnService() {
         main.removeCallbacks(refresh)
         main.removeCallbacks(establishAnyway)
         if (Engine.phase.value == Engine.Phase.ON) netmerge.Netmerge.stop()
+        runCatching { netmerge.Netmerge.setOwnerResolver(null) }
         Engine.setPhase(Engine.Phase.OFF)
         tracker?.stop()
         tracker = null

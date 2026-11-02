@@ -47,11 +47,16 @@ func (c *slotConn) Close() error {
 
 // DialPinned is DialTCP for front-ends that hand the conn to someone else to pump.
 func (b *Balancer) DialPinned(ctx context.Context, host string, port int) (net.Conn, error) {
-	c, sl, f, err := b.DialTCP(ctx, host, port)
+	return b.DialPinnedGroup(ctx, host, port, "")
+}
+
+// DialPinnedGroup is DialPinned for a flow whose owner is known: group (see GroupKey) is the app.
+func (b *Balancer) DialPinnedGroup(ctx context.Context, host string, port int, group string) (net.Conn, error) {
+	c, sl, f, err := b.dialTCP(ctx, host, port, group)
 	if err != nil {
 		return nil, err
 	}
-	sc := &slotConn{TCPConn: c.(*net.TCPConn), sl: sl, fam: f, s: b.S, dest: host}
+	sc := &slotConn{TCPConn: c.(*net.TCPConn), sl: sl, fam: f, s: b.S, dest: GroupKey(group, host)}
 	sl.conns.Store(sc, struct{}{})
 	return sc, nil
 }
