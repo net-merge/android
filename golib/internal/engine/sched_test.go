@@ -364,3 +364,57 @@ func TestUploadWeightsFollowUplink(t *testing.T) {
 		t.Fatalf("upload: cell has the better uplink and should get more flows, ratio %.2f", r)
 	}
 }
+
+// Two connections to one server are one download in parts: they must land on different networks even
+// when other apps' connections make one network look busier than the other.
+func TestSiblingsSpreadDespiteUnrelatedLoad(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
+	for i := 0; i < 5; i++ { // idle connections of other apps, all on B
+		s.AcquireDest(Fam4, map[string]struct{}{"A": {}}, "other")
+	}
+	first := s.AcquireDest(Fam4, nil, "cdn")
+	second := s.AcquireDest(Fam4, nil, "cdn")
+	if first.Name != "A" || second.Name != "B" {
+		t.Fatalf("siblings went to %s and %s, want A then B", first.Name, second.Name)
+	}
+}
+
+func TestSiblingsSplitFollowsWeightsLoosely(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 0.5)})
+	var picks []*Slot
+	for i := 0; i < 6; i++ {
+		picks = append(picks, s.AcquireDest(Fam4, nil, "cdn"))
+	}
+	// 2:1 in favour of the faster network, and the slower one is used from the second connection on.
+	if countBy(picks, "A") != 4 || countBy(picks, "B") != 2 || picks[1].Name != "B" {
+		t.Fatalf("got A=%d B=%d, second went to %s", countBy(picks, "A"), countBy(picks, "B"), picks[1].Name)
+	}
+}
+
+func TestClearlySlowerNetworkGetsNoSiblings(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 0.1)})
+	for i := 0; i < 4; i++ {
+		if sl := s.AcquireDest(Fam4, nil, "cdn"); sl.Name != "A" {
+			t.Fatalf("connection %d went to %s, want A (B is 10x slower)", i, sl.Name)
+		}
+	}
+}
+
+func TestReleaseDestForgetsTheSibling(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
+	first := s.AcquireDest(Fam4, nil, "cdn")
+	s.ReleaseDest(first, Fam4, "cdn")
+	if n := len(first.dest[Fam4]); n != 0 {
+		t.Fatalf("dest map still has %d entries after release", n)
+	}
+}
+
+func TestFirstFlowToADestIsPlacedByLoad(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "10.0.0.1", 1), nic("B", "10.0.0.2", 1)})
+	for i := 0; i < 3; i++ {
+		s.AcquireDest(Fam4, map[string]struct{}{"B": {}}, "other") // 3 flows on A
+	}
+	if got := s.AcquireDest(Fam4, nil, "new"); got.Name != "B" {
+		t.Fatalf("first flow to a new server went to %s, want the less loaded B", got.Name)
+	}
+}

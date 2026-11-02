@@ -109,5 +109,5 @@ func (b *Balancer) handleSocks5(c net.Conn) {
 	}
 	c.SetDeadline(time.Time{})
 	socksReply(c, repOK)
-	Relay(c, up, sl, fam, b.S)
+	Relay(c, up, sl, fam, b.S, host)
 }
