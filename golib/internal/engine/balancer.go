@@ -144,7 +144,7 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		rep, lastErr = repNetUnreachable, errors.New("no usable IPv6 adapter")
 	}
 	for {
-		sl := b.S.AcquireFor(f, tried)
+		sl := b.S.AcquireDest(f, tried, host)
 		if sl == nil {
 			return nil, nil, f, &dialError{rep: rep, err: lastErr}
 		}
@@ -159,7 +159,7 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		if err == nil {
 			return conn, sl, f, nil
 		}
-		b.S.ReleaseFor(sl, f)
+		b.S.ReleaseDest(sl, f, host)
 		c := classify(err)
 		if c.linkDown {
 			b.S.Fail(sl, f, b.FailCooldown)
@@ -184,10 +184,10 @@ var bufPool = sync.Pool{New: func() any { b := make([]byte, 128<<10); return &b 
 // Relay copies both directions until both sides finish, counting bytes on the slot, then
 // closes both conns and releases the slot. Half-close is honoured so request/response
 // protocols that shut down their write side still receive the reply.
-func Relay(client, upstream net.Conn, sl *Slot, f Family, s *Scheduler) {
+func Relay(client, upstream net.Conn, sl *Slot, f Family, s *Scheduler, dest string) {
 	var wg sync.WaitGroup
 	var once sync.Once
-	release := func() { once.Do(func() { s.ReleaseFor(sl, f) }) } // at the first half-close, see slotConn
+	release := func() { once.Do(func() { s.ReleaseDest(sl, f, dest) }) } // at the first half-close, see slotConn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
