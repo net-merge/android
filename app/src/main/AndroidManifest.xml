@@ -36,7 +36,7 @@
             </intent-filter>
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="VPN that balances traffic over Wi-Fi and mobile data" />
+                android:value="VPN that balances traffic over Wi-Fi, mobile data and Ethernet" />
         </service>
 
         <service

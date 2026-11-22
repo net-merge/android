@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 data class Palette(
     val wifi: Color,
     val cell: Color,
+    val eth: Color,
     val good: Color,
     val warn: Color,
     val bad: Color,
@@ -26,6 +27,7 @@ data class Palette(
 private val DarkPalette = Palette(
     wifi = Color(0xFF38BDF8),
     cell = Color(0xFFFB923C),
+    eth = Color(0xFFA78BFA),
     good = Color(0xFF34D399),
     warn = Color(0xFFFBBF24),
     bad = Color(0xFFF87171),
@@ -38,6 +40,7 @@ private val DarkPalette = Palette(
 private val LightPalette = Palette(
     wifi = Color(0xFF0284C7),
     cell = Color(0xFFEA580C),
+    eth = Color(0xFF7C3AED),
     good = Color(0xFF059669),
     warn = Color(0xFFD97706),
     bad = Color(0xFFDC2626),

@@ -11,10 +11,27 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 
 /**
- * Keeps Wi-Fi and mobile data both connected and reports the usable ones.
+ * Transports merged by the app. Ethernet covers USB-C / OTG Ethernet adapters and docks; its
+ * request just stays pending on phones that never get one.
+ */
+private val TRANSPORTS = listOf(
+    NetworkCapabilities.TRANSPORT_WIFI,
+    NetworkCapabilities.TRANSPORT_CELLULAR,
+    NetworkCapabilities.TRANSPORT_ETHERNET,
+)
+
+private fun baseName(transport: Int): String = when (transport) {
+    NetworkCapabilities.TRANSPORT_WIFI -> "Wi-Fi"
+    NetworkCapabilities.TRANSPORT_ETHERNET -> "Ethernet"
+    else -> "Mobile data"
+}
+
+/**
+ * Keeps Wi-Fi, mobile data and Ethernet connected together and reports the usable ones.
  *
- * Android normally tears mobile data down once Wi-Fi is up. Holding a [NetworkRequest] for each
- * transport keeps both alive for as long as the tracker runs (needs CHANGE_NETWORK_STATE).
+ * Android normally tears the lower-scored networks down once a better one is up (mobile data
+ * when Wi-Fi connects, Wi-Fi when Ethernet connects). Holding a [NetworkRequest] for each
+ * transport keeps them all alive for as long as the tracker runs (needs CHANGE_NETWORK_STATE).
  */
 class NetworkTracker(
     context: Context,
@@ -36,7 +53,7 @@ class NetworkTracker(
     private val callbacks = mutableListOf<ConnectivityManager.NetworkCallback>()
 
     fun start() {
-        for (transport in listOf(NetworkCapabilities.TRANSPORT_WIFI, NetworkCapabilities.TRANSPORT_CELLULAR)) {
+        for (transport in TRANSPORTS) {
             val request = NetworkRequest.Builder()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
@@ -93,8 +110,9 @@ class NetworkTracker(
         val seen = HashMap<String, Int>()
         return snapshot.map { (network, info) ->
             val (transport, lp) = info
-            val base = if (transport == NetworkCapabilities.TRANSPORT_WIFI) "Wi-Fi" else "Mobile data"
-            // Dual SIM or two Wi-Fi links get "Mobile data 2" etc.; names must stay unique and stable.
+            val base = baseName(transport)
+            // Dual SIM, two Wi-Fi links or two Ethernet adapters get "Mobile data 2" etc.; names
+            // must stay unique and stable.
             val n = (seen[base] ?: 0) + 1
             seen[base] = n
             val name = if (n == 1) base else "$base $n"

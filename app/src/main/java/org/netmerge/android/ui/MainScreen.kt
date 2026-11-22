@@ -135,7 +135,7 @@ private fun Header(phase: Engine.Phase, networks: Int) {
             label = "status",
         ) { (ph, n) ->
             val (text, color) = when (ph) {
-                Engine.Phase.OFF -> "Off · tap to merge Wi-Fi and mobile data" to p.muted
+                Engine.Phase.OFF -> "Off · tap to merge Wi-Fi, mobile data and Ethernet" to p.muted
                 Engine.Phase.STARTING -> "Connecting…" to p.warn
                 Engine.Phase.ON -> when (n) {
                     0 -> "Waiting for networks" to p.warn
@@ -191,7 +191,17 @@ private fun Card(content: @Composable () -> Unit) {
     ) { content() }
 }
 
-fun colorFor(name: String, p: Palette): Color = if (name.startsWith("Wi-Fi")) p.wifi else p.cell
+fun colorFor(name: String, p: Palette): Color = when {
+    name.startsWith("Wi-Fi") -> p.wifi
+    name.startsWith("Ethernet") -> p.eth
+    else -> p.cell
+}
+
+fun iconFor(name: String): Int = when {
+    name.startsWith("Wi-Fi") -> R.drawable.ic_wifi
+    name.startsWith("Ethernet") -> R.drawable.ic_ethernet
+    else -> R.drawable.ic_cell
+}
 
 @Composable
 private fun ChartCard(stats: List<Stats>, history: Map<String, List<Float>>) {
@@ -237,7 +247,7 @@ private fun NetworkCard(s: Stats, all: List<Stats>, index: Int) {
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        painterResource(if (s.name.startsWith("Wi-Fi")) R.drawable.ic_wifi else R.drawable.ic_cell),
+                        painterResource(iconFor(s.name)),
                         contentDescription = null, tint = color, modifier = Modifier.size(22.dp),
                     )
                 }
@@ -293,7 +303,7 @@ private fun WaitingCard() {
     val p = LocalPalette.current
     Card {
         Text(
-            "Waiting for Wi-Fi or mobile data. Make sure both are switched on.",
+            "Waiting for Wi-Fi, mobile data or Ethernet. Make sure they are switched on or plugged in.",
             color = p.muted, fontSize = 14.sp,
         )
     }
@@ -308,12 +318,14 @@ private fun IntroCard() {
                 Icon(painterResource(R.drawable.ic_wifi), null, tint = p.wifi, modifier = Modifier.size(20.dp))
                 Text("  +  ", color = p.muted)
                 Icon(painterResource(R.drawable.ic_cell), null, tint = p.cell, modifier = Modifier.size(20.dp))
+                Text("  +  ", color = p.muted)
+                Icon(painterResource(R.drawable.ic_ethernet), null, tint = p.eth, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(10.dp))
-                Text("Use both at once", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                Text("Use them all at once", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Each new connection goes out over Wi-Fi or mobile data, balanced by how fast each one is. " +
+                "Each new connection goes out over Wi-Fi, mobile data or a USB Ethernet adapter, balanced by how fast each one is. " +
                     "Downloads and pages that open many connections get faster; a single connection stays on one network. " +
                     "Mobile data stays on while merging, so keep an eye on your data plan.",
                 color = p.muted, fontSize = 14.sp, lineHeight = 20.sp,
@@ -330,8 +342,8 @@ private fun SettingsCard(evenSplit: Boolean, onEvenSplit: (Boolean) -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("Split evenly", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                 Text(
-                    "Give both networks the same share of new connections instead of following their speed. " +
-                        "Only helps when Wi-Fi and mobile data are about as fast as each other.",
+                    "Give every network the same share of new connections instead of following their speed. " +
+                        "Only helps when your networks are about as fast as each other.",
                     color = p.muted, fontSize = 13.sp, lineHeight = 18.sp,
                 )
             }
