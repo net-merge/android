@@ -8,6 +8,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -17,6 +18,8 @@ import android.service.quicksettings.TileService
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.InetAddress
+import java.net.InetSocketAddress
 
 /**
  * Captures all traffic with a TUN and hands it to the Go engine, which re-dials every flow over
@@ -28,6 +31,7 @@ class MergeVpnService : VpnService() {
     companion object {
         const val ACTION_START = "org.netmerge.android.START"
         const val ACTION_STOP = "org.netmerge.android.STOP"
+        const val ACTION_BOOT = "org.netmerge.android.BOOT"
         private const val TAG = "NetMerge"
         private const val CHANNEL = "status"
         private const val NOTIF_ID = 1
@@ -47,6 +51,28 @@ class MergeVpnService : VpnService() {
         }
     }
 
+    private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
+
+    /**
+     * Tells the engine which app owns a connection, so one app's connections are spread over the
+     * networks together (a store opens only two or three downloads; placed one by one they
+     * often all land on the same network). -1 means unknown, and the engine then groups by server.
+     */
+    private val ownerResolver = object : netmerge.OwnerResolver {
+        override fun ownerUid(proto: Long, srcIP: String, srcPort: Long, dstIP: String, dstPort: Long): Long {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1
+            return try {
+                connectivity.getConnectionOwnerUid(
+                    proto.toInt(),
+                    InetSocketAddress(InetAddress.getByName(srcIP), srcPort.toInt()),
+                    InetSocketAddress(InetAddress.getByName(dstIP), dstPort.toInt()),
+                ).toLong()
+            } catch (e: Exception) {
+                -1
+            }
+        }
+    }
+
     private var tun: ParcelFileDescriptor? = null
     private var tracker: NetworkTracker? = null
     private var ticks = 0
@@ -55,6 +81,11 @@ class MergeVpnService : VpnService() {
         override fun run() {
             Engine.sample()
             if (ticks++ % 2 == 0) updateNotification()
+            val phase = Engine.phase.value
+            when (netmerge.Netmerge.autoTick(phase == Engine.Phase.ON).toInt()) {
+                1 -> if (phase == Engine.Phase.ON) pauseCapture()
+                2 -> if (phase == Engine.Phase.PAUSED) resumeCapture()
+            }
             main.postDelayed(this, 1000)
         }
     }
@@ -62,12 +93,13 @@ class MergeVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            runCatching { netmerge.Netmerge.autoUserSet(false) }
             shutdown()
             return START_NOT_STICKY
         }
         // ACTION_START, or the system starting us for always-on VPN (action android.net.VpnService).
         goForeground()
-        if (Engine.phase.value == Engine.Phase.OFF) begin()
+        if (Engine.phase.value == Engine.Phase.OFF) begin(intent?.action == ACTION_BOOT)
         return START_STICKY
     }
 
@@ -77,14 +109,27 @@ class MergeVpnService : VpnService() {
      * the VPN as having no internet), which is what made merging sometimes not work right after
      * switching it on.
      */
-    private fun begin() {
+    private fun begin(fromBoot: Boolean) {
         Engine.setPhase(Engine.Phase.STARTING)
         Engine.loadSettings(this)
         requestTileUpdate()
+        netmerge.Netmerge.startMonitor()
+        main.removeCallbacks(refresh)
+        main.post(refresh)
+        // At boot, with pausing by itself on, merging waits until two networks work, like the PC
+        // version at sign-in. A tap (or the system's always-on VPN) starts it right away.
+        val wait = fromBoot && Engine.autoPause.value
+        if (fromBoot) netmerge.Netmerge.autoStart() else netmerge.Netmerge.autoUserSet(true)
         val t = NetworkTracker(this) { nets -> main.post { onNetworks(nets) } }
         tracker = t
         t.start()
-        main.postDelayed(establishAnyway, NETWORK_WAIT_MS)
+        if (wait) {
+            Engine.setPhase(Engine.Phase.PAUSED)
+            updateNotification()
+            requestTileUpdate()
+        } else {
+            main.postDelayed(establishAnyway, NETWORK_WAIT_MS)
+        }
     }
 
     private fun establish() {
@@ -97,7 +142,7 @@ class MergeVpnService : VpnService() {
             .setMtu(MTU)
             .addAddress("198.18.0.1", 24)
             .addRoute("0.0.0.0", 0)
-            // DNS goes into the TUN like everything else and is balanced over both networks.
+            // DNS goes into the TUN like everything else and is balanced over all networks.
             .addDnsServer("1.1.1.1")
             .addDnsServer("8.8.8.8")
             .addDisallowedApplication(packageName)
@@ -130,6 +175,7 @@ class MergeVpnService : VpnService() {
         pushNetworks(nets)
         try {
             // The engine owns the descriptor from here and closes it in stop().
+            netmerge.Netmerge.setOwnerResolver(ownerResolver)
             netmerge.Netmerge.start(pfd.detachFd().toLong(), MTU.toLong())
         } catch (e: Exception) {
             Log.e(TAG, "engine start failed", e)
@@ -137,8 +183,22 @@ class MergeVpnService : VpnService() {
             return
         }
         Engine.setPhase(Engine.Phase.ON)
-        main.post(refresh)
         requestTileUpdate()
+    }
+
+    /** Stops capturing but keeps watching the networks. Traffic goes back to the system's own path. */
+    private fun pauseCapture() {
+        netmerge.Netmerge.pause()
+        runCatching { tun?.close() }
+        tun = null
+        Engine.setPhase(Engine.Phase.PAUSED)
+        updateNotification()
+        requestTileUpdate()
+    }
+
+    private fun resumeCapture() {
+        Engine.setPhase(Engine.Phase.STARTING)
+        establish()
     }
 
     private fun onNetworks(nets: List<NetworkTracker.Tracked>) {
@@ -148,7 +208,7 @@ class MergeVpnService : VpnService() {
                 pushNetworks(nets)
                 if (nets.isNotEmpty()) establish()
             }
-            Engine.Phase.ON -> {
+            Engine.Phase.ON, Engine.Phase.PAUSED -> {
                 pushNetworks(nets)
                 updateNotification()
             }
@@ -179,7 +239,8 @@ class MergeVpnService : VpnService() {
     private fun shutdown() {
         main.removeCallbacks(refresh)
         main.removeCallbacks(establishAnyway)
-        if (Engine.phase.value == Engine.Phase.ON) netmerge.Netmerge.stop()
+        if (Engine.phase.value != Engine.Phase.OFF) netmerge.Netmerge.stop()
+        runCatching { netmerge.Netmerge.setOwnerResolver(null) }
         Engine.setPhase(Engine.Phase.OFF)
         tracker?.stop()
         tracker = null
@@ -224,7 +285,7 @@ class MergeVpnService : VpnService() {
         }
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(text: String, title: String = getString(R.string.notif_title)): Notification {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
@@ -233,7 +294,7 @@ class MergeVpnService : VpnService() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_merge)
-            .setContentTitle(getString(R.string.notif_title))
+            .setContentTitle(title)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setOngoing(true)
@@ -244,10 +305,15 @@ class MergeVpnService : VpnService() {
     }
 
     private fun updateNotification() {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (Engine.phase.value == Engine.Phase.PAUSED) {
+            nm.notify(NOTIF_ID, buildNotification(getString(R.string.notif_paused), getString(R.string.notif_paused_title)))
+            return
+        }
         if (Engine.phase.value != Engine.Phase.ON) return
         val stats = Engine.stats.value
         val text = if (stats.isEmpty()) getString(R.string.notif_waiting)
         else stats.joinToString("\n") { "${it.name}: ${Stats.rate(it.rateIn + it.rateOut)} · ${it.status}" }
-        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(text))
+        nm.notify(NOTIF_ID, buildNotification(text))
     }
 }

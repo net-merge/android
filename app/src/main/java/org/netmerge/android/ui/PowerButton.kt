@@ -56,7 +56,7 @@ fun PowerButton(phase: Engine.Phase, onClick: () -> Unit, size: Dp = 196.dp) {
     val iconColor by animateColorAsState(
         when (phase) {
             Engine.Phase.ON -> p.good
-            Engine.Phase.STARTING -> p.warn
+            Engine.Phase.STARTING, Engine.Phase.PAUSED -> p.warn
             Engine.Phase.OFF -> p.muted
         },
         tween(500), label = "icon",

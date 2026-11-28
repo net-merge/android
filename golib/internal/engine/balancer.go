@@ -132,6 +132,20 @@ func classify(err error) dialClass {
 // DialTCP connects to host:port over one NIC, failing over to the others on link-level errors.
 // On success the caller owns the returned slot and must Relay or Release it.
 func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn, *Slot, Family, error) {
+	return b.dialTCP(ctx, host, port, "")
+}
+
+// GroupKey names the set of flows that count as siblings when spreading: the app that owns the flow
+// when it is known ("app:10112"), else the server it goes to.
+func GroupKey(group, host string) string {
+	if group != "" {
+		return group
+	}
+	return "ip:" + host
+}
+
+func (b *Balancer) dialTCP(ctx context.Context, host string, port int, group string) (net.Conn, *Slot, Family, error) {
+	key := GroupKey(group, host)
 	// The destination's family decides which NIC address is used; a host name stays IPv4.
 	f, network := Fam4, "tcp4"
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
@@ -144,7 +158,7 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		rep, lastErr = repNetUnreachable, errors.New("no usable IPv6 adapter")
 	}
 	for {
-		sl := b.S.AcquireFor(f, tried)
+		sl := b.S.AcquireDest(f, tried, key)
 		if sl == nil {
 			return nil, nil, f, &dialError{rep: rep, err: lastErr}
 		}
@@ -159,10 +173,12 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		if err == nil {
 			return conn, sl, f, nil
 		}
-		b.S.ReleaseFor(sl, f)
+		b.S.ReleaseDest(sl, f, key)
 		c := classify(err)
 		if c.linkDown {
 			b.S.Fail(sl, f, b.FailCooldown)
+		} else if c.retry && ctx.Err() == nil { // not when the caller gave up: that says nothing about the link
+			b.S.Suspect(sl, f)
 		}
 		rep, lastErr = c.rep, err
 		if !c.retry || ctx.Err() != nil {
@@ -185,31 +201,42 @@ var bufPool = sync.Pool{New: func() any { b := make([]byte, 128<<10); return &b 
 // closes both conns and releases the slot. Half-close is honoured so request/response
 // protocols that shut down their write side still receive the reply.
 func Relay(client, upstream net.Conn, sl *Slot, f Family, s *Scheduler) {
+	relay(client, upstream, sl, f, s, "")
+}
+
+func relay(client, upstream net.Conn, sl *Slot, f Family, s *Scheduler, key string) {
+	activity := s.trackKey(sl, f, key)
 	var wg sync.WaitGroup
 	var once sync.Once
-	release := func() { once.Do(func() { s.ReleaseFor(sl, f) }) } // at the first half-close, see slotConn
+	release := func() {
+		once.Do(func() {
+			s.untrack(sl, f, activity)
+			s.ReleaseDest(sl, f, key)
+		})
+	} // at the first half-close, see slotConn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pump(upstream, client, &sl.bytesOut[f])
+		pump(upstream, client, &sl.bytesOut[f], sl, false, activity)
 		release()
 	}()
-	pump(client, upstream, &sl.bytesIn[f])
+	pump(client, upstream, &sl.bytesIn[f], sl, true, activity)
 	release()
 	wg.Wait()
 	client.Close()
 	upstream.Close()
 }
 
-func pump(dst, src net.Conn, counter interface{ Add(int64) int64 }) {
+func pump(dst, src net.Conn, counter *atomic.Int64, sl *Slot, down bool, activity *flowActivity) {
 	bp := bufPool.Get().(*[]byte)
 	defer bufPool.Put(bp)
 	buf := *bp
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
+			activity.bytes.Add(int64(n))
 			counter.Add(int64(n))
-			if _, werr := dst.Write(buf[:n]); werr != nil {
+			if _, werr := sl.writePaced(dst, buf[:n], down); werr != nil {
 				dst.Close()
 				src.Close()
 				return

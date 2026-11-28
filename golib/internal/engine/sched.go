@@ -49,18 +49,22 @@ type Slot struct {
 	actF                  [2]atomic.Int64
 	bytesIn, bytesOut     [2]atomic.Int64
 	probing               [2]atomic.Bool
+	limit                 atomic.Pointer[limitPair] // nil = unlimited; see limit.go
 
 	// guarded by Scheduler.mu
 	weight          [2]float64
-	base            float64 // Android port: the configured weight, used until speeds are measured
 	present         bool
 	state           [2]linkState
 	lastProbe       [2]time.Time
+	timedOut        [2]time.Time // when a connection in this family last timed out, see SetState
 	downUntil       [2]time.Time
 	lastIn, lastOut [2]int64
 	rateIn, rateOut [2]float64 // bytes/s over the last tick
 	peak            [2]float64 // observed capacity: max recent rateIn+rateOut
-	peakUp          [2]float64 // Android port: the same, for upload (rateOut) alone
+	flows           [2]map[*flowActivity]struct{}
+	base            float64           // Android: the starting weight, from the system's speed estimate
+	peakUp          [2]float64        // Android: like peak, for upload (rateOut) alone
+	dest            [2]map[string]int // Android: open flows per group (see GroupKey)
 
 	// The adapter's total traffic from the OS's counters (all apps, not only net-merge's flows).
 	linkIn, linkOut         uint64
@@ -70,6 +74,62 @@ type Slot struct {
 	// Android: open flows on this slot, so they can be closed the moment its network goes away
 	// (see CloseGone). Keys are io.Closer.
 	conns sync.Map
+}
+
+// flowActivity separates recent data transfer from long-lived idle sockets. Byte
+// accounting is lock-free; membership and sampled activity are guarded by mu.
+type flowActivity struct {
+	bytes atomic.Int64
+	last  int64
+	idle  time.Duration
+	key   string // the group it counts in (see GroupKey)
+}
+
+const flowIdleAfter = 2 * time.Second
+
+func (s *Scheduler) track(sl *Slot, f Family) *flowActivity { return s.trackKey(sl, f, "") }
+
+func (s *Scheduler) trackKey(sl *Slot, f Family, key string) *flowActivity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := &flowActivity{key: key}
+	if sl.flows[f] == nil {
+		sl.flows[f] = make(map[*flowActivity]struct{})
+	}
+	sl.flows[f][a] = struct{}{}
+	return a
+}
+
+func (s *Scheduler) untrack(sl *Slot, f Family, a *flowActivity) {
+	s.mu.Lock()
+	delete(sl.flows[f], a)
+	s.mu.Unlock()
+}
+
+func (sl *Slot) busy(f Family) int64 {
+	// Acquired but not yet tracked flows are connecting, and must count too.
+	n := max(int64(0), sl.actF[f].Load()-int64(len(sl.flows[f])))
+	for a := range sl.flows[f] {
+		if a.idle < flowIdleAfter {
+			n++
+		}
+	}
+	return n
+}
+
+// busySiblings counts this group's flows on the slot that are connecting or moving data. Idle ones
+// don't count: an app's silent API connection must not push its download onto a slower network.
+func (sl *Slot) busySiblings(f Family, key string) int {
+	n := sl.dest[f][key]
+	if n == 0 {
+		return 0
+	}
+	for a := range sl.flows[f] {
+		if a.key == key && a.idle >= flowIdleAfter {
+			n--
+		}
+	}
+	return n
 }
 
 func (sl *Slot) ip(f Family) net.IP {
@@ -94,22 +154,20 @@ type SlotStats struct {
 	RateIn, RateOut   float64 // through net-merge, both families summed (bytes/s)
 	LinkIn, LinkOut   float64 // through the adapter by any app, from the OS's counters (bytes/s)
 	Peak, Peak6       float64
+	LimitMbps         float64 // cap in Mbit/s, 0 = unlimited
 }
 
-// Scheduler is weighted least-active-flows, per address family: each new flow goes to the NIC
-// with the lowest (active + 1) / weight among those that have an address of that family. Only
-// new flows take the lock.
+// Scheduler uses weighted least-busy-flows per address family. Automatic mode
+// discounts idle TCP sockets; static mode
+// retains weighted least-open-flows. Data transfer accounting stays lock-free.
 type Scheduler struct {
-	mu    sync.Mutex
-	slots []*Slot
-	auto  bool
-	now   func() time.Time
-
-	// Android port: while traffic is mostly upload, auto weights follow each network's upload
-	// capacity instead of its combined capacity. Wi-Fi and mobile data usually have very
-	// different upload/download ratios, so download-based weights send new upload flows to the
-	// network with the weaker uplink.
+	mu     sync.Mutex
+	slots  []*Slot
+	auto   bool
+	limits map[string]float64 // adapter name -> Mbit/s, 0 or absent = unlimited
+	// Android: while traffic is mostly upload, auto weights follow each network's upload speed.
 	uploading bool
+	now       func() time.Time
 }
 
 func NewScheduler(nics []nics.Nic) *Scheduler {
@@ -123,6 +181,52 @@ func (s *Scheduler) SetAuto(on bool) {
 	s.mu.Lock()
 	s.auto = on
 	s.mu.Unlock()
+}
+
+// SetLimit caps an adapter at mbitPerSec Mbit/s across all of its flows and both address families;
+// 0 removes the cap. Saved in the scheduler, so an adapter that is unplugged and comes back keeps it.
+func (s *Scheduler) SetLimit(name string, mbitPerSec float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.limits == nil {
+		s.limits = map[string]float64{}
+	}
+	if mbitPerSec <= 0 {
+		delete(s.limits, name)
+	} else {
+		s.limits[name] = mbitPerSec
+	}
+	for _, sl := range s.slots {
+		if sl.key == name {
+			sl.setLimit(mbitPerSec)
+		}
+	}
+}
+
+// SetLimits replaces every cap, e.g. with what was saved on disk at startup.
+func (s *Scheduler) SetLimits(limits map[string]float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.limits = make(map[string]float64, len(limits))
+	for name, mbitPerSec := range limits {
+		if name != "" && mbitPerSec > 0 {
+			s.limits[name] = mbitPerSec
+		}
+	}
+	for _, sl := range s.slots {
+		sl.setLimit(s.limits[sl.key])
+	}
+}
+
+// Limits returns the caps by adapter name in Mbit/s, for saving and for `net-merge status`.
+func (s *Scheduler) Limits() map[string]float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]float64, len(s.limits))
+	for name, mbitPerSec := range s.limits {
+		out[name] = mbitPerSec
+	}
+	return out
 }
 
 func normAddr(n nics.Nic) *slotAddr {
@@ -157,6 +261,7 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 		if found == nil {
 			sl := &Slot{Name: n.Name, Index: n.Index, key: n.Name, weight: [2]float64{n.Weight, n.Weight}, base: n.Weight, present: true}
 			sl.addr.Store(na)
+			sl.setLimit(s.limits[n.Name])
 			s.slots = append(s.slots, sl)
 			continue
 		}
@@ -166,11 +271,19 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 			found.weight = [2]float64{n.Weight, n.Weight}
 		}
 		old := found.addr.Load()
-		if !old.ip4.Equal(na.ip4) {
-			found.state[Fam4] = stateUnknown // new address: re-verify
-		}
-		if !old.ip6.Equal(na.ip6) {
-			found.state[Fam6] = stateUnknown
+		for _, f := range []Family{Fam4, Fam6} {
+			changed := !old.ip4.Equal(na.ip4)
+			if f == Fam6 {
+				changed = !old.ip6.Equal(na.ip6)
+			}
+			if changed {
+				found.state[f] = stateUnknown
+				found.lastProbe[f], found.downUntil[f] = time.Time{}, time.Time{}
+				found.peak[f] = 0
+				if s.auto {
+					found.weight[f] = 1
+				}
+			}
 		}
 		if !old.ip4.Equal(na.ip4) || !old.ip6.Equal(na.ip6) {
 			found.addr.Store(na)
@@ -188,12 +301,20 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 // A NIC counts as measured once it has carried this much (bytes/s, about 0.4 Mbit/s).
 const minMeasuredPeak = 50_000
 
-// Tick samples throughput per family. With auto on, a family's weights follow each NIC's
-// observed peak for that family (floored at 0.05, so a slow path still sees an occasional flow
-// and is re-measured). Until every NIC with that family has been measured the weights stay
-// equal, which spreads load so each one gets measured. The peak holds while a NIC is idle and
-// only decays when it is in use but underperforming, so capacity is remembered across pauses.
+// MinWeight is the smallest weight a network gets once measured: never less than half a share of
+// new connections. A measured rate is what a network carried, not what it can carry. A network that
+// is lightly used decays toward that small rate, then gets fewer connections, so its rate stays small
+// and it never recovers. Capping the skew at 2:1 keeps both networks in use. (Android; PC uses 0.05.)
+const MinWeight = 0.5
+
+// Tick samples flow activity and throughput per family. Automatic weights follow
+// smoothed capacity estimates (floored at MinWeight). Until all links are measured,
+// weights stay equal. Quiet links retain capacity, while stale low estimates
+// recover up to half the best link's capacity so they can be measured again.
 func (s *Scheduler) Tick(dt time.Duration) {
+	if dt <= 0 {
+		return
+	}
 	// nics.Octets calls into the OS, so read the counters on a snapshot of the slots without s.mu
 	// (it would stall AcquireFor and Update) and take the lock only to store the results.
 	s.mu.Lock()
@@ -244,17 +365,50 @@ func (s *Scheduler) Tick(dt time.Duration) {
 		var maxPeak, maxUp float64
 		live, measured := 0, true
 		idle := map[*Slot]bool{}
+		// How many flows each network is moving data on, and the average over the live ones.
+		var busySum, busyN int64
+		for _, sl := range s.slots {
+			for a := range sl.flows[f] {
+				n := a.bytes.Load()
+				if n != a.last {
+					a.idle = 0
+				} else {
+					a.idle += dt
+				}
+				a.last = n
+			}
+			if sl.present && sl.ip(f) != nil {
+				busySum += sl.busy(f)
+				busyN++
+			}
+		}
 		for _, sl := range s.slots {
 			in, out := sl.bytesIn[f].Load(), sl.bytesOut[f].Load()
 			sl.rateIn[f] = float64(in-sl.lastIn[f]) / sec
 			sl.rateOut[f] = float64(out-sl.lastOut[f]) / sec
 			sl.lastIn[f], sl.lastOut[f] = in, out
 			r := sl.rateIn[f] + sl.rateOut[f]
-			if r >= 0.05*sl.peak[f] {
-				sl.peak[f] = math.Max(r, sl.peak[f]*0.97)
+			// A network given fewer busy flows than the others only shows what those flows asked for,
+			// not what it can carry. Letting that lower its estimate starves it: a lower weight brings
+			// fewer flows, which keep the estimate low. So a falling sample only counts on a network
+			// carrying at least its share; a rising one always does.
+			fairShare := busyN == 0 || sl.busy(f)*busyN >= busySum
+			if r >= minMeasuredPeak && r >= 0.05*sl.peak[f] && (r >= sl.peak[f] || fairShare) {
+				if sl.peak[f] == 0 {
+					sl.peak[f] = r
+				} else {
+					// Fast but smoothed growth, slower decay. Neither a single burst
+					// nor a quiet tick should abruptly invert link preference.
+					tau := 2.0
+					if r < sl.peak[f] {
+						tau = 30
+					}
+					sl.peak[f] += (r - sl.peak[f]) * (1 - math.Exp(-sec/tau))
+				}
 			} else {
 				idle[sl] = true
 			}
+			sl.capPeak(f)
 			if sl.rateOut[f] >= 0.05*sl.peakUp[f] {
 				sl.peakUp[f] = math.Max(sl.rateOut[f], sl.peakUp[f]*0.97)
 			}
@@ -265,19 +419,19 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			maxPeak = math.Max(maxPeak, sl.peak[f])
 			maxUp = math.Max(maxUp, sl.peakUp[f])
 		}
-		// The same drift for the upload estimate, so a network starved of upload flows is
-		// re-measured too.
+		// The same recovery for the upload estimate, so a network starved of upload flows is
+		// measured again.
 		for _, sl := range s.slots {
 			if sl.present && sl.ip(f) != nil && sl.peakUp[f] > 0 && sl.rateOut[f] < 0.05*sl.peakUp[f] {
 				sl.peakUp[f] = math.Min(sl.peakUp[f]*1.03, math.Max(sl.peakUp[f], 0.5*maxUp))
 			}
 		}
-		// An idle NIC's old estimate may be stale or pessimistic (it was measured during a bad
-		// moment and then starved of flows, so it could never correct itself). Let it drift back
-		// up, capped at half of the best NIC, so it keeps getting a fair chance to be re-measured.
+		// An idle link may have a pessimistic estimate. Let it recover, but never
+		// raise it above half the best link just because no traffic is flowing.
 		for sl := range idle {
 			if sl.present && sl.ip(f) != nil && sl.peak[f] > 0 {
 				sl.peak[f] = math.Min(sl.peak[f]*1.03, math.Max(sl.peak[f], 0.5*maxPeak))
+				sl.capPeak(f)
 			}
 		}
 		for _, sl := range s.slots {
@@ -300,20 +454,37 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			}
 			switch {
 			case live < 2 || !measured:
-				// Android port: until every network is measured, use the configured weights (the
-				// system's own speed estimates) instead of an even split, so a much slower network
-				// doesn't get half the flows while it is being measured.
+				// Until every network is measured, start from the system's estimate (see SetNetworks).
 				sl.weight[f] = sl.base
 				if sl.weight[f] <= 0 {
 					sl.weight[f] = 1
 				}
 			case s.uploading && upMeasured:
-				sl.weight[f] = math.Max(0.05, sl.peakUp[f]/maxUp)
+				sl.weight[f] = math.Max(sl.floor(maxUp), sl.peakUp[f]/maxUp)
 			default:
-				sl.weight[f] = math.Max(0.05, sl.peak[f]/maxPeak)
+				sl.weight[f] = math.Max(sl.floor(maxPeak), sl.peak[f]/maxPeak)
 			}
 		}
 	}
+}
+
+// capPeak keeps a capped network's estimate at its cap. It can't carry more, yet its estimate would
+// creep up: its low weight gives it fewer busy flows than the others, so its falling samples are set
+// aside (see fairShare), and the idle recovery raises it by 3% a tick. The caller holds s.mu.
+func (sl *Slot) capPeak(f Family) {
+	if lim := sl.limitMbps(); lim > 0 {
+		sl.peak[f] = math.Min(sl.peak[f], lim*bytesPerMbit)
+		sl.peakUp[f] = math.Min(sl.peakUp[f], lim*bytesPerMbit)
+	}
+}
+
+// floor is the lowest weight for this network, given the best network's estimate. A capped network
+// is slow on purpose, so MinWeight must not lift it back to a third of the new connections.
+func (sl *Slot) floor(best float64) float64 {
+	if lim := sl.limitMbps(); lim > 0 && best > 0 {
+		return math.Max(0.05, math.Min(MinWeight, lim*bytesPerMbit/best))
+	}
+	return MinWeight
 }
 
 // Acquire picks an IPv4 NIC for a new flow, skipping the ones in skip. The caller must Release it.
@@ -322,6 +493,14 @@ func (s *Scheduler) Release(sl *Slot)                       { s.ReleaseFor(sl, F
 
 // AcquireFor picks a NIC that has an address of the given family.
 func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
+	return s.AcquireDest(f, skip, "")
+}
+
+// AcquireDest is AcquireFor for a flow in a group (see GroupKey). An app's parallel connections are
+// usually one job, so while the group has flows moving data, the next one goes to the network with
+// the fewest of them, with weights counting no more than 2:1. Otherwise it is placed by the normal
+// score, so a lone download goes to the fastest network. Release it with ReleaseDest and the same key.
+func (s *Scheduler) AcquireDest(f Family, skip map[string]struct{}, dest string) *Slot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -357,18 +536,44 @@ func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
 	}
 	// Random start so ties don't resonate with the arrival pattern (a rotating counter can
 	// lock onto e.g. "every third flow is a short DNS-like one" and starve an adapter).
+	var maxW float64
+	siblings := false
+	for _, sl := range pool {
+		maxW = math.Max(maxW, sl.weight[f])
+		if dest != "" && sl.busySiblings(f, dest) > 0 {
+			siblings = true
+		}
+	}
 	start := rand.IntN(len(pool))
 	var best *Slot
-	bestScore := math.Inf(1)
+	bestScore, bestSib := math.Inf(1), 0
 	for i := range pool {
 		sl := pool[(start+i)%len(pool)]
-		if score := float64(sl.actF[f].Load()+1) / sl.weight[f]; score < bestScore {
-			best, bestScore = sl, score
+		var score float64
+		sib := 0
+		if siblings && maxW > 0 {
+			sib = sl.busySiblings(f, dest)
+			score = float64(sib+1) / math.Max(sl.weight[f]/maxW, MinWeight)
+		} else {
+			load := sl.actF[f].Load()
+			if s.auto {
+				load = sl.busy(f)
+			}
+			score = float64(load+1) / sl.weight[f]
+		}
+		if score < bestScore || (score == bestScore && siblings && sib < bestSib) {
+			best, bestScore, bestSib = sl, score, sib
 		}
 	}
 	best.active.Add(1)
 	best.actF[f].Add(1)
 	best.total.Add(1)
+	if dest != "" {
+		if best.dest[f] == nil {
+			best.dest[f] = map[string]int{}
+		}
+		best.dest[f][dest]++
+	}
 	return best
 }
 
@@ -411,29 +616,24 @@ func (s *Scheduler) ReleaseFor(sl *Slot, f Family) {
 	sl.actF[f].Add(-1)
 }
 
-// SetState records a probe result. A passing probe also clears any link-error cooldown.
-func (s *Scheduler) SetState(sl *Slot, f Family, up bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if up {
-		sl.state[f] = stateUp
-		sl.downUntil[f] = time.Time{}
-	} else {
-		sl.state[f] = stateDown
+// ReleaseDest frees a slot taken with AcquireDest.
+func (s *Scheduler) ReleaseDest(sl *Slot, f Family, dest string) {
+	s.ReleaseFor(sl, f)
+	if dest == "" {
+		return
 	}
-}
-
-// Fail sidelines a NIC whose link itself is broken (for one address family).
-func (s *Scheduler) Fail(sl *Slot, f Family, cooldown time.Duration) {
 	s.mu.Lock()
-	sl.downUntil[f] = s.now().Add(cooldown)
+	if sl.dest[f][dest] <= 1 {
+		delete(sl.dest[f], dest)
+	} else {
+		sl.dest[f][dest]--
+	}
 	s.mu.Unlock()
-	sl.failed.Add(1)
 }
 
-// CloseGone closes every open flow on a network that is no longer present. Without this, flows
-// on a network that was just switched off hang until they time out, and apps wait with them
-// instead of reconnecting over the networks that are left. (Android port addition.)
+// CloseGone closes every open flow on a network that is no longer present. Without this, flows on
+// a network that was just switched off hang until they time out, and apps wait with them instead of
+// reconnecting over the networks that are left. (Android addition.)
 func (s *Scheduler) CloseGone() int {
 	s.mu.Lock()
 	var gone []*Slot
@@ -454,6 +654,59 @@ func (s *Scheduler) CloseGone() int {
 	return n
 }
 
+// SetState records a probe result. A passing probe also clears any link-error cooldown. A failed
+// one is set aside while the network is busy: a full network answers too late to pass the probe, and
+// marking it down would stop new connections on it in the middle of a download. The next probe comes
+// probeEveryUp later as usual.
+//
+// Data in the probed family proves that family works. Data in the other family only shows that the
+// network is full, so it vouches for this family only until a real connection in it times out as well.
+func (s *Scheduler) SetState(sl *Slot, f Family, up bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case up:
+		sl.state[f] = stateUp
+		sl.downUntil[f] = time.Time{}
+	case sl.busyCarrying() && (sl.carrying(f) || s.now().Sub(sl.timedOut[f]) >= timedOutMemory):
+		// set aside: the next regular probe decides
+	default:
+		sl.state[f] = stateDown
+	}
+}
+
+// timedOutMemory is how long a timed-out connection counts against its family's next probe.
+const timedOutMemory = 2 * probeEveryUp
+
+// Suspect records that a connection in this family timed out (see SetState).
+func (s *Scheduler) Suspect(sl *Slot, f Family) {
+	s.mu.Lock()
+	sl.timedOut[f] = s.now()
+	s.mu.Unlock()
+}
+
+// busyCarrying reports whether net-merge is moving real data over the network: receiving it, or
+// sending it while the acknowledgements come back (about 1% or more, from the OS's counters).
+// The caller holds Scheduler.mu.
+func (sl *Slot) busyCarrying() bool {
+	in := sl.rateIn[Fam4] + sl.rateIn[Fam6]
+	out := sl.rateOut[Fam4] + sl.rateOut[Fam6]
+	return in >= minMeasuredPeak || out >= minMeasuredPeak && sl.linkRateIn >= out/100
+}
+
+// carrying is busyCarrying for one address family. The caller holds Scheduler.mu.
+func (sl *Slot) carrying(f Family) bool {
+	return sl.rateIn[f] >= minMeasuredPeak || sl.rateOut[f] >= minMeasuredPeak && sl.linkRateIn >= sl.rateOut[f]/100
+}
+
+// Fail sidelines a NIC whose link itself is broken (for one address family).
+func (s *Scheduler) Fail(sl *Slot, f Family, cooldown time.Duration) {
+	s.mu.Lock()
+	sl.downUntil[f] = s.now().Add(cooldown)
+	s.mu.Unlock()
+	sl.failed.Add(1)
+}
+
 func (s *Scheduler) Snapshot() []SlotStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -469,6 +722,7 @@ func (s *Scheduler) Snapshot() []SlotStats {
 			RateIn:   sl.rateIn[Fam4] + sl.rateIn[Fam6], RateOut: sl.rateOut[Fam4] + sl.rateOut[Fam6],
 			LinkIn: sl.linkRateIn, LinkOut: sl.linkRateOut,
 			Peak: sl.peak[Fam4], Peak6: sl.peak[Fam6],
+			LimitMbps: sl.limitMbps(),
 		}
 		if a.ip4 != nil {
 			st.IP, st.State = a.ip4.String(), sl.state[Fam4].String()

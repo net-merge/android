@@ -29,14 +29,39 @@ const udpSessionTimeout = 30 * time.Second
 
 type tunProxy struct{ b *engine.Balancer }
 
+// OwnerFunc, when set, tells which app owns a TCP flow (its uid), or a negative number if unknown.
+// Android implements it with ConnectivityManager.getConnectionOwnerUid. Set it before Start.
+var OwnerFunc func(proto int, srcIP string, srcPort int, dstIP string, dstPort int) int
+
+// group names the app that owns the flow, or nothing if that is unknown.
+func group(proto int, m *M.Metadata, dst string) string {
+	if own := OwnerFunc; own != nil {
+		if uid := own(proto, m.SrcIP.Unmap().String(), int(m.SrcPort), dst, int(m.DstPort)); uid >= 0 {
+			return "app:" + strconv.Itoa(uid)
+		}
+	}
+	return ""
+}
+
 func (p tunProxy) DialContext(ctx context.Context, m *M.Metadata) (net.Conn, error) {
-	return p.b.DialPinned(ctx, m.DstIP.Unmap().String(), int(m.DstPort))
+	dst := m.DstIP.Unmap().String()
+	conn, err := p.b.DialPinnedGroup(ctx, dst, int(m.DstPort), group(6, m, dst))
+	if err != nil {
+		return nil, err
+	}
+	return keepReading{conn}, nil
 }
 
 func (p tunProxy) DialUDP(m *M.Metadata) (net.PacketConn, error) {
+	d := m.DstIP.Unmap()
 	f := engine.Fam4
-	if d := m.DstIP.Unmap(); d.Is6() {
+	if d.Is6() {
 		f = engine.Fam6
+	}
+	// UDP to port 443 is QUIC, where one socket can carry a whole download. It has to count in the
+	// balancing like a TCP connection, or such downloads pile onto one network by chance.
+	if m.DstPort == 443 {
+		return p.b.ListenUDPFlow(context.Background(), f, group(17, m, d.String()), d.String())
 	}
 	return p.b.ListenUDP(context.Background(), f)
 }

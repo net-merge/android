@@ -28,20 +28,11 @@ Faster networks get more connections, and a network that loses internet stops ge
 
 net-merge helps with anything that opens **several connections at once**:
 
-- **Several downloads together**, like updating many apps at once in the Play Store
 - **Web pages**, which load many images and files in parallel
 - **Torrents**, which use dozens of connections
 - **Cloud backups and sync**, like Google Photos or Google Drive uploading several files
 - **Download manager apps** that split one file into parts (for example ADM or 1DM)
 - **Ookla Speedtest in Multi mode**
-
-It does **not** speed up things that use a single connection:
-
-- One big download, such as a single game from the Play Store or one file in your browser
-- A single video stream
-- Online games and video calls
-
-Those stay on one network, so they are never slower than that network on its own.
 
 It also keeps you online: if Wi-Fi drops, new connections go over mobile data.
 
@@ -51,6 +42,25 @@ A wired connection through a USB-C / OTG Ethernet adapter or dock is merged too,
 and mobile data. Plug it in while merging is on and it shows up as its own **Ethernet** card;
 unplug it and its connections move to the other networks. Two adapters show up as
 "Ethernet" and "Ethernet 2". Your phone must support USB Ethernet (most Android 9+ phones do).
+
+## Limitations
+
+The app shows these too, so nobody has to find them here first.
+
+- **One connection always stays on one network.** A Play Store download, a single browser download, one
+  video stream, online games and video calls mostly use one connection. They don't get faster, and they use
+  only one network at a time. They are never slower than that network on its own. We measured a 1 GB Play
+  Store download on a real phone: all of it went over one connection, on TCP and on QUIC alike.
+- **Splitting one connection over two networks needs a server in the middle.** net-merge has no server, and
+  it can't read inside encrypted connections, so it can't ask for parts of a file the way ADM does.
+- **Two networks only add up if each reaches the internet by its own path.** The total can't beat the two
+  speeds added together: with 400 Mbit/s Wi-Fi and 60 Mbit/s mobile data, the best possible is about 460.
+- **Android allows one VPN app at a time,** so net-merge can't run next to another VPN.
+- **Mobile data stays on** while it runs and counts against your plan.
+- **Some sites tie your login to one address.** net-merge may use a different address for each connection, so
+  such a site can ask you to log in again.
+- **Sites that only have IPv6** can't be reached while "Use all networks" is on and your networks differ in
+  IPv6 support.
 
 ## Install
 
@@ -69,9 +79,18 @@ Requires Android 8.0 or newer.
   is on.
 - **Network cards:** each network's status, its share of the traffic, and its live download and
   upload speeds.
+- **Speed limit:** tap *Speed limit* on a network to cap it: 1, 2, 5, 10, 20, 50 or 100 Mbit/s, or any other
+  speed. The cap covers that network's downloads and uploads, across all of its connections, and it is kept
+  after a restart.
 - **Last minute:** a live chart of how much each network carried.
 - **Split evenly:** gives both networks the same share of new connections instead of following
   their speed. Only useful when Wi-Fi and mobile data are about as fast as each other.
+- **Use all networks:** uses IPv6 only if every network has it, so apps use both networks.
+- **Pause when there is only one connection:** pauses by itself when fewer than two networks have internet,
+  and starts again when a second one works. Switching it by hand always wins.
+- **Start when the phone starts:** starts net-merge after a restart.
+- **Version line:** shows the version. When a newer one is out it turns into *Update to vX*, which opens the
+  release page. The app checks at start and every 6 hours, and installing stays your choice.
 
 Mobile data stays on the whole time merging is active, so keep an eye on your data plan.
 
@@ -102,9 +121,12 @@ For developers, in more detail:
 - Android normally turns mobile data off while Wi-Fi is connected (and Wi-Fi off while Ethernet
   is). The app keeps Wi-Fi, cellular and Ethernet up with `ConnectivityManager.requestNetwork`,
   and follows networks coming and going with `NetworkCallback`.
-- The balancing engine (scheduler, balancer and internet checks) is the Go code from
+- The balancing engine (scheduler, balancer, internet checks and speed limits) is the Go code from
   [net-merge](https://github.com/net-merge/net-merge) by Rohit Mahto, built for Android with
-  gomobile.
+  gomobile. Android adds a few things on top: a new connection goes to the network where its app has the
+  fewest connections moving data (Android can say which app owns a connection), QUIC sockets count like TCP
+  connections, the first weights come from Android's speed estimate, weights stay within 2:1, and they
+  follow upload speed while traffic is mostly upload.
 
 ## Building from source
 
