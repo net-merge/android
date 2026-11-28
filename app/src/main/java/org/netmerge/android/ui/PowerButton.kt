@@ -106,7 +106,7 @@ fun PowerButton(phase: Engine.Phase, onClick: () -> Unit, size: Dp = 196.dp) {
             if (active > 0f) {
                 rotate(spin) {
                     drawArc(
-                        Brush.sweepGradient(listOf(p.wifi, p.good, p.cell, p.wifi), center),
+                        Brush.sweepGradient(listOf(p.wifi, p.good, p.cell, p.eth, p.wifi), center),
                         startAngle = 0f, sweepAngle = 360f * active, useCenter = false,
                         topLeft = Offset(center.x - ring, center.y - ring),
                         size = androidx.compose.ui.geometry.Size(ring * 2, ring * 2),

@@ -45,6 +45,13 @@ Those stay on one network, so they are never slower than that network on its own
 
 It also keeps you online: if Wi-Fi drops, new connections go over mobile data.
 
+### Ethernet
+
+A wired connection through a USB-C / OTG Ethernet adapter or dock is merged too, next to Wi-Fi
+and mobile data. Plug it in while merging is on and it shows up as its own **Ethernet** card;
+unplug it and its connections move to the other networks. Two adapters show up as
+"Ethernet" and "Ethernet 2". Your phone must support USB Ethernet (most Android 9+ phones do).
+
 ## Install
 
 1. On your phone, tap **[Download the APK](https://github.com/net-merge/android/releases/latest/download/net-merge-android.apk)**.
@@ -92,9 +99,9 @@ For developers, in more detail:
 - Each outgoing socket is tied to one network with `android_setsocknetwork` (the NDK form of
   `Network.bindSocket`). The app leaves itself out of its own VPN, so those sockets go straight
   out.
-- Android normally turns mobile data off while Wi-Fi is connected. The app keeps both up with
-  `ConnectivityManager.requestNetwork`, and follows networks coming and going with
-  `NetworkCallback`.
+- Android normally turns mobile data off while Wi-Fi is connected (and Wi-Fi off while Ethernet
+  is). The app keeps Wi-Fi, cellular and Ethernet up with `ConnectivityManager.requestNetwork`,
+  and follows networks coming and going with `NetworkCallback`.
 - The balancing engine (scheduler, balancer and internet checks) is the Go code from
   [net-merge](https://github.com/net-merge/net-merge) by Rohit Mahto, built for Android with
   gomobile.

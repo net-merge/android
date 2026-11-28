@@ -20,8 +20,8 @@ import org.json.JSONObject
 
 /**
  * Captures all traffic with a TUN and hands it to the Go engine, which re-dials every flow over
- * Wi-Fi or mobile data. The app itself is excluded from the VPN, so the engine's own sockets
- * (pinned to a specific network) leave the phone directly.
+ * Wi-Fi, mobile data or Ethernet. The app itself is excluded from the VPN, so the engine's own
+ * sockets (pinned to a specific network) leave the phone directly.
  */
 class MergeVpnService : VpnService() {
 
