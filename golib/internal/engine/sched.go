@@ -56,6 +56,7 @@ type Slot struct {
 	present         bool
 	state           [2]linkState
 	lastProbe       [2]time.Time
+	timedOut        [2]time.Time // when a connection in this family last timed out, see SetState
 	downUntil       [2]time.Time
 	lastIn, lastOut [2]int64
 	rateIn, rateOut [2]float64 // bytes/s over the last tick
@@ -307,7 +308,7 @@ const minMeasuredPeak = 50_000
 const MinWeight = 0.5
 
 // Tick samples flow activity and throughput per family. Automatic weights follow
-// smoothed capacity estimates (floored at 0.05). Until all links are measured,
+// smoothed capacity estimates (floored at MinWeight). Until all links are measured,
 // weights stay equal. Quiet links retain capacity, while stale low estimates
 // recover up to half the best link's capacity so they can be measured again.
 func (s *Scheduler) Tick(dt time.Duration) {
@@ -364,6 +365,8 @@ func (s *Scheduler) Tick(dt time.Duration) {
 		var maxPeak, maxUp float64
 		live, measured := 0, true
 		idle := map[*Slot]bool{}
+		// How many flows each network is moving data on, and the average over the live ones.
+		var busySum, busyN int64
 		for _, sl := range s.slots {
 			for a := range sl.flows[f] {
 				n := a.bytes.Load()
@@ -374,12 +377,23 @@ func (s *Scheduler) Tick(dt time.Duration) {
 				}
 				a.last = n
 			}
+			if sl.present && sl.ip(f) != nil {
+				busySum += sl.busy(f)
+				busyN++
+			}
+		}
+		for _, sl := range s.slots {
 			in, out := sl.bytesIn[f].Load(), sl.bytesOut[f].Load()
 			sl.rateIn[f] = float64(in-sl.lastIn[f]) / sec
 			sl.rateOut[f] = float64(out-sl.lastOut[f]) / sec
 			sl.lastIn[f], sl.lastOut[f] = in, out
 			r := sl.rateIn[f] + sl.rateOut[f]
-			if r >= minMeasuredPeak && r >= 0.05*sl.peak[f] {
+			// A network given fewer busy flows than the others only shows what those flows asked for,
+			// not what it can carry. Letting that lower its estimate starves it: a lower weight brings
+			// fewer flows, which keep the estimate low. So a falling sample only counts on a network
+			// carrying at least its share; a rising one always does.
+			fairShare := busyN == 0 || sl.busy(f)*busyN >= busySum
+			if r >= minMeasuredPeak && r >= 0.05*sl.peak[f] && (r >= sl.peak[f] || fairShare) {
 				if sl.peak[f] == 0 {
 					sl.peak[f] = r
 				} else {
@@ -394,6 +408,7 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			} else {
 				idle[sl] = true
 			}
+			sl.capPeak(f)
 			if sl.rateOut[f] >= 0.05*sl.peakUp[f] {
 				sl.peakUp[f] = math.Max(sl.rateOut[f], sl.peakUp[f]*0.97)
 			}
@@ -416,6 +431,7 @@ func (s *Scheduler) Tick(dt time.Duration) {
 		for sl := range idle {
 			if sl.present && sl.ip(f) != nil && sl.peak[f] > 0 {
 				sl.peak[f] = math.Min(sl.peak[f]*1.03, math.Max(sl.peak[f], 0.5*maxPeak))
+				sl.capPeak(f)
 			}
 		}
 		for _, sl := range s.slots {
@@ -444,12 +460,31 @@ func (s *Scheduler) Tick(dt time.Duration) {
 					sl.weight[f] = 1
 				}
 			case s.uploading && upMeasured:
-				sl.weight[f] = math.Max(MinWeight, sl.peakUp[f]/maxUp)
+				sl.weight[f] = math.Max(sl.floor(maxUp), sl.peakUp[f]/maxUp)
 			default:
-				sl.weight[f] = math.Max(MinWeight, sl.peak[f]/maxPeak)
+				sl.weight[f] = math.Max(sl.floor(maxPeak), sl.peak[f]/maxPeak)
 			}
 		}
 	}
+}
+
+// capPeak keeps a capped network's estimate at its cap. It can't carry more, yet its estimate would
+// creep up: its low weight gives it fewer busy flows than the others, so its falling samples are set
+// aside (see fairShare), and the idle recovery raises it by 3% a tick. The caller holds s.mu.
+func (sl *Slot) capPeak(f Family) {
+	if lim := sl.limitMbps(); lim > 0 {
+		sl.peak[f] = math.Min(sl.peak[f], lim*bytesPerMbit)
+		sl.peakUp[f] = math.Min(sl.peakUp[f], lim*bytesPerMbit)
+	}
+}
+
+// floor is the lowest weight for this network, given the best network's estimate. A capped network
+// is slow on purpose, so MinWeight must not lift it back to a third of the new connections.
+func (sl *Slot) floor(best float64) float64 {
+	if lim := sl.limitMbps(); lim > 0 && best > 0 {
+		return math.Max(0.05, math.Min(MinWeight, lim*bytesPerMbit/best))
+	}
+	return MinWeight
 }
 
 // Acquire picks an IPv4 NIC for a new flow, skipping the ones in skip. The caller must Release it.
@@ -619,16 +654,49 @@ func (s *Scheduler) CloseGone() int {
 	return n
 }
 
-// SetState records a probe result. A passing probe also clears any link-error cooldown.
+// SetState records a probe result. A passing probe also clears any link-error cooldown. A failed
+// one is set aside while the network is busy: a full network answers too late to pass the probe, and
+// marking it down would stop new connections on it in the middle of a download. The next probe comes
+// probeEveryUp later as usual.
+//
+// Data in the probed family proves that family works. Data in the other family only shows that the
+// network is full, so it vouches for this family only until a real connection in it times out as well.
 func (s *Scheduler) SetState(sl *Slot, f Family, up bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if up {
+	switch {
+	case up:
 		sl.state[f] = stateUp
 		sl.downUntil[f] = time.Time{}
-	} else {
+	case sl.busyCarrying() && (sl.carrying(f) || s.now().Sub(sl.timedOut[f]) >= timedOutMemory):
+		// set aside: the next regular probe decides
+	default:
 		sl.state[f] = stateDown
 	}
+}
+
+// timedOutMemory is how long a timed-out connection counts against its family's next probe.
+const timedOutMemory = 2 * probeEveryUp
+
+// Suspect records that a connection in this family timed out (see SetState).
+func (s *Scheduler) Suspect(sl *Slot, f Family) {
+	s.mu.Lock()
+	sl.timedOut[f] = s.now()
+	s.mu.Unlock()
+}
+
+// busyCarrying reports whether net-merge is moving real data over the network: receiving it, or
+// sending it while the acknowledgements come back (about 1% or more, from the OS's counters).
+// The caller holds Scheduler.mu.
+func (sl *Slot) busyCarrying() bool {
+	in := sl.rateIn[Fam4] + sl.rateIn[Fam6]
+	out := sl.rateOut[Fam4] + sl.rateOut[Fam6]
+	return in >= minMeasuredPeak || out >= minMeasuredPeak && sl.linkRateIn >= out/100
+}
+
+// carrying is busyCarrying for one address family. The caller holds Scheduler.mu.
+func (sl *Slot) carrying(f Family) bool {
+	return sl.rateIn[f] >= minMeasuredPeak || sl.rateOut[f] >= minMeasuredPeak && sl.linkRateIn >= sl.rateOut[f]/100
 }
 
 // Fail sidelines a NIC whose link itself is broken (for one address family).
