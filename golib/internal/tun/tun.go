@@ -45,7 +45,11 @@ func group(proto int, m *M.Metadata, dst string) string {
 
 func (p tunProxy) DialContext(ctx context.Context, m *M.Metadata) (net.Conn, error) {
 	dst := m.DstIP.Unmap().String()
-	return p.b.DialPinnedGroup(ctx, dst, int(m.DstPort), group(6, m, dst))
+	conn, err := p.b.DialPinnedGroup(ctx, dst, int(m.DstPort), group(6, m, dst))
+	if err != nil {
+		return nil, err
+	}
+	return keepReading{conn}, nil
 }
 
 func (p tunProxy) DialUDP(m *M.Metadata) (net.PacketConn, error) {
